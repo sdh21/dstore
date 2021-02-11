@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package paxos;
+
+option go_package = "ds-storage/src/paxos";
+
+service Paxos {
+    rpc Prepare(PrepareArgs) returns (PrepareReply);
+    rpc Accept(AcceptArgs) returns (AcceptReply);
+    rpc Decide(DecideArgs) returns (DecideReply);
+    rpc Heartbeat(HeartbeatArgs) returns (HeartbeatReply);
+}
+
+message PrepareArgs {
+    int64 InstanceIdFrom = 1;
+    int64 N = 2;
+    int32 Sender = 3;
+    bool  LearnToInf = 4;
+}
+
+message PrepareReply {
+    bool OK = 1;
+    // give the proposer a hint about which N to choose
+    int64 HighestNpSeen = 2;
+    // the instances before is freed
+    int64 InstanceIdFrom = 3;
+    int64 NoMoreAcceptedAfter = 4;
+    // if LearnToInf=true, PrepareReply includes all instances
+    // in [InstanceIdFrom, max(NoMoreAcceptedAfter, InstanceIdFrom)]
+    repeated int64 Na = 5 [packed=true];
+    repeated bytes Va = 6;
+}
+
+message AcceptArgs {
+    int64 InstanceIdFrom = 1;
+    int64 InstanceIdTo = 2;
+    int32 Sender = 3;
+    int64 N = 4;
+    repeated bytes V = 5;
+}
+
+message AcceptReply {
+    bool OK = 1;
+    int64 InstanceIdFrom = 2;
+}
+
+message DecideArgs {
+    int64 InstanceIdFrom = 1;
+    int64 InstanceIdTo = 2;
+    int32 Sender = 3;
+    repeated bytes V = 4;
+    int64 MinimumInstanceId = 5;
+}
+
+message DecideReply {
+    bool OK = 1;
+    int64 MinimumInstanceId = 2;
+}
+
+message HeartbeatArgs {
+    int32 Sender = 1;
+    int64 MinimumInstanceId = 2;
+    int64 HighestInstanceIdSeen = 3;
+}
+
+message HeartbeatReply {
+    bool OK = 1;
+    int64 MinimumInstanceId = 2;
+    int64 HighestInstanceIdSeen = 3;
+    // use this to determine the newest highestNp
+    // so we will not takeover alive leader if we just recovered from
+    // a network partition.
+    int64 HighestNp = 4;
+    // If we are leader, set LeaderNp, -1 otherwise
+    int64 LeaderNp = 5;
+}
