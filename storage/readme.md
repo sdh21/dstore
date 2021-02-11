@@ -49,7 +49,6 @@ The layout is:
   |  block 0 | location (4) | offset (2) | units (2) | size (4) | crc32 (4)
   |  block 1 | location (4) | offset (2) | units (2) | size (4) | crc32 (4)
   |  block ...
-  |
 
     A block's info needs 16 bytes to store.
 
