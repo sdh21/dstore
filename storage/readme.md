@@ -36,21 +36,20 @@ A file might locate in multiple blocks, if and only if the file cannot fit in on
 ## 2. File metadata
 A file metadata stores how a file locates in blocks.
 
-A file metadata layout is:
+The layout is:
 
 (The amount in parentheses is how many bytes this field needs.)
 
-|||||||||
-|--|--|--|--|--|--|--|--|
-|  metadata | crc32 (4) | block count (4) | flag (2) | key size (2) | padding (4) |
-|  key 0 | .... | key content  | .... | |
-|  key 1 | .... | key content  | .... | |
-|  key ... | .... | key content  | ... 0000 |  padding to  | 16 bytes
-|  block 0 | location (4) | offset (2) | units (2) | size (4) | crc32 (4)
-|  block 1 | location (4) | offset (2) | units (2) | size (4) | crc32 (4)
-|  block ...
-|
-
+  | Type | Field | Field | Field | Field |  Field |
+  |------|-------|-------|-------|-------|--------|
+  |  metadata | crc32 (4) | block count (4) | flag (2) | key size (2) | padding (4) |
+  |  key 0 | .... | key content  | .... | |
+  |  key 1 | .... | key content  | .... | |
+  |  key ... | .... | key content  | ... 0000 |  padding to  | 16 bytes
+  |  block 0 | location (4) | offset (2) | units (2) | size (4) | crc32 (4)
+  |  block 1 | location (4) | offset (2) | units (2) | size (4) | crc32 (4)
+  |  block ...
+  |
 
     A block's info needs 16 bytes to store.
 
