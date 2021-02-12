@@ -50,21 +50,21 @@ I have implemented
 
 I'm doing:
 
-[ ] Working on a demo that provides online file storage service
+- [ ] Working on a demo that provides online file storage service
 
-[ ] Finishing Paxos & Key-Value DB crash recovery & quick restart
+- [ ] Finishing Paxos & Key-Value DB crash recovery & quick restart
 
-[ ] Improving strategies regarding freeing Paxos in-memory instances in case one peer is down for a long time
+- [ ] Improving strategies regarding freeing Paxos in-memory instances in case one peer is down for a long time
 
-[ ] Working on membership change
+- [ ] Working on membership change
 
-[ ] Optimizing for read-only transactions
+- [ ] Optimizing for read-only transactions
 
 ---
 
 I am planning to:
 
-[ ] Implement sharding
+- [ ] Implement sharding
 
-[ ] Support transactions involving multiple tables/shards
+- [ ] Support transactions involving multiple tables/shards
 
