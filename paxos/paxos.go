@@ -7,8 +7,6 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"errors"
-	"github.com/emirpasic/gods/trees/redblacktree"
-	godsUtils "github.com/emirpasic/gods/utils"
 	"github.com/sdh21/dstore/utils"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -128,11 +126,6 @@ type Paxos struct {
 	lastSequentialInstanceId int64
 	decideSequentialChan     chan DecideEvent
 	sequentialLock           sync.Mutex
-
-	// Instances that we are proposing
-	// never free an instance that we are still proposing on
-	rbProposing     *redblacktree.Tree
-	rbProposingLock sync.Mutex
 
 	// proposer can directly send accept with leaderNp
 	// for instances with id >= skipPrepareFrom
@@ -1062,25 +1055,6 @@ func (px *Paxos) GetMe() int {
 // the application no longer needs instances <= instanceId.
 func (px *Paxos) Done(instanceId int64) {
 	go px.updateMinimumInstanceIdNeeded(px.me, instanceId+1)
-	// make sure we are not proposing at this instance before set it done
-	// no longer needed.
-	/*
-		px.waitGroup.Add(1)
-		go func() {
-			defer px.waitGroup.Done()
-			for atomic.LoadInt32(&px.closed) == 0 {
-				px.rbProposingLock.Lock()
-				minProposing := px.rbProposing.Left()
-				px.rbProposingLock.Unlock()
-				if minProposing == nil || minProposing.Value.(int64) > instanceId {
-					px.updateMinimumInstanceIdNeeded(px.me, instanceId + 1)
-					return
-				}
-				time.Sleep(1000 * time.Millisecond)
-			}
-		}()
-	*/
-
 }
 
 // the application wants to know the
@@ -1181,12 +1155,12 @@ func (px *Paxos) GetInstance(instanceId int64) (bool, interface{}) {
 func (px *Paxos) Close() {
 	atomic.StoreInt32(&px.closed, 1)
 	if px.server != nil {
-		//px.server.GracefulStop()
+		px.server.GracefulStop()
 		px.server = nil
 	}
 
 	// wait for all goroutines to finish
-	//px.waitGroup.Wait()
+	px.waitGroup.Wait()
 }
 
 //  ---- Start the heartbeat goroutine
@@ -1484,7 +1458,6 @@ func NewPaxos(config *ServerConfig, tlsConfig *utils.MutualTLSConfig) (*Paxos, e
 			LatencyLowerBound:      0,
 			LatencyUpperBound:      0,
 		},
-		rbProposing:           redblacktree.NewWith(godsUtils.Int64Comparator),
 		instancesToStorageKey: NewArrayQueue(1),
 	}
 

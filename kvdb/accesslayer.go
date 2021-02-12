@@ -57,10 +57,6 @@ func NewBundledRequests() *BundledRequests {
 	}
 }
 
-func (db *DBAccessLayer) EncodeAnyOps(ops ...*AnyOp) []byte {
-	return db.client.EncodeAnyOps(ops...)
-}
-
 func (db *DBAccessLayer) Submit(t *Transaction) *TransactionResult {
 	q := db.q[atomic.AddUint64(&db.qRotate, 1)%db.ConcurrentQs]
 	q.mu.Lock()
@@ -76,8 +72,7 @@ func (db *DBAccessLayer) Submit(t *Transaction) *TransactionResult {
 		q.reqWaiting = NewBundledRequests()
 		q.busy = true
 		q.mu.Unlock()
-		reply := db.client.Submit(&BatchSubmitArgs{Wrapper: db.client.CreateBundledOp(reqSent.queuedTs...),
-		})
+		reply := db.client.Submit(&BatchSubmitArgs{Wrapper: db.client.CreateBundledOp(reqSent.queuedTs...)})
 		if reply.OK {
 			for i, ch := range reqSent.tChannels {
 				ch <- reply.Result.TransactionResults[i]

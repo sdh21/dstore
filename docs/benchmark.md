@@ -46,14 +46,17 @@ Configuration:
 
 ### Part 2. Key-Value DB
 
-- Each transaction has 4 MapStore operations and 3 ListAppend operations
-- Value with different size (1KB, 4KB, 16KB) is put in the last ListAppend operation
+- Each transaction has 4 MapStore operations and 3 ListAppend operations.  
+  The transaction stores two strings and one nested map in the root map, stores a nested list in 
+  the nested map, and append three values to the nested list.  
+  For details, see main/client_templates.go
+- Value with different size (16 Bytes, 1 KB, 4 KB) is put in the last ListAppend operation
 - Every client must wait for server response before sending a new transaction
 - Each client is writing its own table
 
 * **1 KB Value**
 
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
     | ----------- |  :----------: | :------- |
   | 1 |   1255   |   1271  | 
   | 4 |   5418   |   5477  |
@@ -62,7 +65,7 @@ Configuration:
 
 * **4 KB Value**
 
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
     | ----------- |  :----------: | :------- |
   | 1 |   1108   |   1138  | 
   | 4 |   4962   |   5007  |
@@ -71,7 +74,7 @@ Configuration:
 
 * **16 bytes Value (batch enabled, 16 queues)**
 
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
     | ----------- |  :----------: | :------- |
   | 1024 |    153967  |  157244  |
   | 4096 |    196163  |  204414  |
@@ -79,7 +82,7 @@ Configuration:
 
 * **1 KB Value (batch enabled, 16 queues)**
 
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
     | ----------- |  :----------: | :------- |
   | 64 |  29373   |   29514  |
   | 256 | 57923   |   59253  |
@@ -95,11 +98,13 @@ Configuration:
 
 - 3 Paxos servers running on 3 Vultr cloud servers
 
-- Each server has 4 vCore, 16GB memory, nvme SSD
+- Each server has 4 vCore, 16 GB memory, nvme SSD
 
 - Servers are in the same region, with about 0.4ms latency
 
 - Clients are running on one additional Vultr server in the same region
+
+- TLS enabled
 
 ### Part 1. Paxos
 
@@ -125,7 +130,7 @@ Configuration:
 
 * **1 KB Value**
 
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
     | ----------- |  :----------: | :------- |
   | 1 |   892   |   913  | 
   | 4 |   3140   |   3292  |
@@ -134,7 +139,7 @@ Configuration:
 
 * **4 KB Value**
   
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
   | ----------- |  :----------: | :------- |
   | 1 |   854   |   876  |
   | 4 |   3097   |   3171  |
@@ -143,7 +148,7 @@ Configuration:
 
 * **16 KB Value**
   
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
   | ----------- |  :----------: | :------- |
   | 1 |   775   |   788  |
   | 4 |   2416   |   2515  |
@@ -152,7 +157,7 @@ Configuration:
 
 * **1 KB Value (batch enabled, 4 concurrent queues)**
 
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
   | ----------- |  :----------: | :------- |
   | 64 |  21195   |   22209  |
   | 256 | 39313   |   41130  |
@@ -174,11 +179,13 @@ Configuration:
 
 - To cope with high-latency network, the number of concurrent clients is increased.
 
-Key-Value DB Performace:
+- TLS enabled
+
+Key-Value DB Performance:
 
 * **1 KB Value**
 
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
     | ----------- |  :----------: | :------- |
   | 64 |   297   |   307  | 
   | 512 |   2190   |   2375  |
@@ -186,7 +193,7 @@ Key-Value DB Performace:
 
 * **1 KB Value (batch enabled, 256 concurrent queues)**
 
-  | Clients |  Transaction per second (minimum)  | (maximum) |
+  | Clients |  Transactions per second (minimum)  | (maximum) |
     | ----------- |  :----------: | :------- |
   | 2048 |  4221   |   4413  |
   | 8192 |  4357   |   4736  |

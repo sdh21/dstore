@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// StorageServer wraps a storage.Storage and provides HTTP API.
-// So users can directly talk to storage servers instead of
+// StorageServer wraps a storage.Storage and provides HTTP API,
+// so users can directly talk to storage servers instead of
 // asking forwarders to forward requests.
 type StorageServer struct {
 	// authentication, user-storage-token->files

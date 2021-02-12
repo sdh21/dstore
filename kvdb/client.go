@@ -1,9 +1,7 @@
 package kvdb
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"fmt"
 	"github.com/sdh21/dstore/utils"
 	"google.golang.org/grpc"
@@ -122,16 +120,6 @@ func (c *Client) Submit(args *BatchSubmitArgs) *BatchSubmitReply {
 		}
 		time.Sleep(1000 * time.Millisecond)
 	}
-}
-
-func (c *Client) EncodeAnyOps(ops ...*AnyOp) []byte {
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	err := enc.Encode(&ops)
-	if err != nil {
-		panic("cannot encode AnyOp")
-	}
-	return buf.Bytes()
 }
 
 //  -----------------------------
