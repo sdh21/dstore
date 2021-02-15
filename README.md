@@ -26,9 +26,9 @@ I have implemented
 2.  A key-value database that supports
 
     - Mini-transaction:  
-      An atomic unit that could include many operations
+      An atomic unit with version control
 
-    - Complex operations:  
+    - Fine-grained operations:  
       operations including Get, Put, ListAppend, MapStore, MapDelete;  
       planning to support SortedMap, RangeQuery, If-else Statement, and arithmetic calculation.
 
