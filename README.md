@@ -33,7 +33,7 @@ I have implemented
       planning to support SortedMap, RangeQuery, If-else Statement, and arithmetic calculation.
 
     - DB-level batching:  
-      A DB access layer provides transactions batching which wraps transactions from different clients into one proposal to alleviate Paxos sync overhead.
+      batching transactions from different clients into one proposal to alleviate Paxos sync overhead
 
     - Benchmarked 200,000 mini-transactions per second with batch enabled.  
       See details here:
