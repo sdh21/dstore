@@ -1,5 +1,5 @@
 
-Dstore is a distributed storage service that aims to support fault-tolerant and durable key-value store and key-object store.
+Dstore is a distributed storage service aimed at fault-tolerant and durable key-value&key-object storage.
 
 ---
 
