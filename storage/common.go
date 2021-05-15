@@ -8,11 +8,12 @@ import (
 const LimitMaxFileBlockCount = 16384
 const LimitMaxKeyLength = 65536
 
-// How a file is located in blocks
+// FileMetadata determines how a file is located in blocks
 type FileMetadata struct {
 	// where is the block that stores this metadata
 	myBlock *FileBlockInfo
 	loaded  bool
+	lock    sync.Mutex
 	// file info
 	Key        string
 	BlockCount uint32
@@ -21,7 +22,7 @@ type FileMetadata struct {
 	Flag       uint16
 }
 
-// How a file's block is located on disk
+// FileBlockInfo determines how a file's block is located on disk
 type FileBlockInfo struct {
 	// this block located on /folder/stats.prefix-index
 	Index uint32

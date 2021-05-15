@@ -3,21 +3,84 @@ package kvdb
 import (
 	"bytes"
 	"encoding/gob"
-	"fmt"
+	"github.com/sdh21/dstore/paxos"
 	"github.com/sdh21/dstore/storage"
 	"log"
-	"sync/atomic"
-	"time"
+	"strconv"
 )
 
-// No lock needed, as checkpoint is done one by one
-type checkpointState struct {
-	lastCheckpointVersion    map[string]int64
-	lastCheckpointProposalId map[string]int64
-	diskStorage              *storage.Storage
+type CheckpointConfig struct {
+	FullCheckpointEveryNLog        int64
+	FullCheckpointAfterNSeconds    int64
+	IncrementalCheckpointEveryNLog int64
+}
+
+type checkpointInst struct {
+	config CheckpointConfig
+
+	eventChannel                 chan paxos.DecideEvent
+	dbState                      *DBState
+	lastFullCheckpointProposalId int64
+
+	diskStorage *storage.Storage
 	// old checkpoint for a table. If a new one is synced to disk,
 	// the old checkpoint can be deleted.
+
 	lastCheckpointKey map[string]string
+}
+
+func (db *KeyValueDB) initializeCheckPoint(config *DBConfig) error {
+	db.checkpoint.config = config.Checkpoint
+	db.checkpoint = &checkpointInst{}
+	db.checkpoint.lastFullCheckpointProposalId = -1
+	db.checkpoint.eventChannel = make(chan paxos.DecideEvent, 100)
+
+	folder := config.StorageFolder + "/checkpoint"
+	var err error
+	db.checkpoint.diskStorage, err = storage.NewStorage(folder, config.StorageBlockSize, config.AllocationUnit)
+
+	return err
+}
+
+// FIXME: temporary solution
+// cp id = paxos id
+// each table has a corresponding cp id indicating the increm or full?
+func (cp *checkpointInst) incrementalCheckpoint() error {
+	for name, table := range cp.dbState.Tables {
+		if !table.dirty {
+			continue
+		}
+		var buf bytes.Buffer
+		encoder := gob.NewEncoder(&buf)
+		err := encoder.Encode(table.Data)
+		if err != nil {
+			return err
+		}
+		_, err = cp.diskStorage.CreateSmallFile("IncCP-"+
+			strconv.FormatInt(cp.dbState.LastAppliedProposalId, 36)+
+			"-"+name,
+			int64(buf.Len()), buf.Bytes())
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// FIXME: temporary solution
+func (cp *checkpointInst) fullCheckpoint() error {
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	err := encoder.Encode(cp.dbState)
+	if err != nil {
+		return err
+	}
+	_, err = cp.diskStorage.CreateSmallFile("FullCP-"+strconv.FormatInt(cp.dbState.LastAppliedProposalId, 36),
+		int64(buf.Len()), buf.Bytes())
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // A simple checkpoint, which routinely scans dirty tables
@@ -26,97 +89,32 @@ type checkpointState struct {
 // After a checkpoint is generated, we can tell Paxos to free
 // the log instances.
 func (db *KeyValueDB) startCheckpointRoutine() {
+	checkpoint := db.checkpoint
 	go func() {
-		lastProposalId := int64(-1)
-		dirtyTables := make(map[string]*TableState)
-
 		for {
-
-			time.Sleep(100 * time.Millisecond)
-
-			if atomic.LoadInt32(&db.closed) == 1 {
+			event, ok := <-db.checkpoint.eventChannel
+			if !ok {
 				break
 			}
-
-			if lastProposalId == -1 {
-				db.state.mu.RLock()
-				if len(db.state.tables) == 0 {
-					db.state.mu.RUnlock()
-					continue
-				}
-				lastProposalId = db.state.lastProposalId
-				dirtyTables = make(map[string]*TableState)
-				// find all dirty tables
-				for id, table := range db.state.tables {
-					if db.checkpoint.lastCheckpointProposalId[id] > lastProposalId {
-						log.Fatalf("cannot happen")
-					}
-					if db.checkpoint.lastCheckpointProposalId[id] == lastProposalId {
-						continue
-					}
-					db.checkpoint.lastCheckpointProposalId[id] = lastProposalId
-					if db.checkpoint.lastCheckpointVersion[id] == table.TableVersion {
-						continue
-					}
-					db.checkpoint.lastCheckpointVersion[id] = table.TableVersion
-					dirtyTables[id] = table
-				}
-				db.state.mu.RUnlock()
+			_ = db.applyOpWrapper(checkpoint.dbState, event.DecidedValue.(*OpWrapper), event.InstanceId)
+			if checkpoint.dbState.LastAppliedProposalId != event.InstanceId {
+				log.Fatalf("??? checkpoint.go startCheckpointRoutine")
 			}
-
-			if len(dirtyTables) == 0 {
-				db.px.Done(lastProposalId)
-				// logger.Warning("Checkpoint %v finished, asking Paxos to free instances <= %v", db.px.GetMe(), lastProposalId)
-				lastProposalId = -1
-				continue
-			}
-
-			// dump dirty tables
-
-			for id, table := range dirtyTables {
-				buf := &bytes.Buffer{}
-				enc := gob.NewEncoder(buf)
-
-				table.mu.Lock()
-				version := table.TableVersion
-				err := enc.Encode(table)
+			if event.InstanceId%checkpoint.config.IncrementalCheckpointEveryNLog == 0 {
+				err := checkpoint.incrementalCheckpoint()
 				if err != nil {
-					log.Fatalf("cannot encode table: %v", err)
+					log.Fatalf("cannot generate checkpoint")
 				}
-				table.mu.Unlock()
-
-				snapshotKey := fmt.Sprintf("%v/%x/%x", id, version, lastProposalId)
-				_, err = db.checkpoint.diskStorage.CreateSmallFile(snapshotKey, int64(len(buf.Bytes())), buf.Bytes())
-				if err != nil {
-					log.Fatalf("cannot create storage file: %v", err)
-				}
-				// Now we've synced the new checkpoint to the disk
-				lastKey, lastKeyFound := db.checkpoint.lastCheckpointKey[id]
-				if lastKeyFound {
-					err = db.checkpoint.diskStorage.DeleteFile(lastKey)
-					if err != nil {
-						log.Fatalf("cannot delete storage file: %v %v", lastKey, err)
-					}
-				}
-				db.checkpoint.lastCheckpointKey[id] = snapshotKey
+				db.px.Done(event.InstanceId)
 			}
 
-			// Now we've synced all checkpoint files to disk
-			db.px.Done(lastProposalId)
-			//logger.Warning("Checkpoint %v finished, asking Paxos to free instances <= %v", db.px.GetMe(), lastProposalId)
-			lastProposalId = -1
+			if event.InstanceId%checkpoint.config.FullCheckpointEveryNLog == 0 {
+				err := checkpoint.fullCheckpoint()
+				if err != nil {
+					log.Fatalf("cannot generate checkpoint")
+				}
+				db.px.Done(event.InstanceId)
+			}
 		}
 	}()
-}
-
-func (db *KeyValueDB) initializeCheckPoint(config *DBConfig) error {
-	db.checkpoint = &checkpointState{}
-	db.checkpoint.lastCheckpointVersion = map[string]int64{}
-	db.checkpoint.lastCheckpointProposalId = map[string]int64{}
-	db.checkpoint.lastCheckpointKey = map[string]string{}
-
-	folder := config.StorageFolder + "/checkpoint"
-	db.checkpoint.diskStorage = storage.NewEmptyStorage(folder, config.StorageBlockSize, config.AllocationUnit)
-
-	return nil
 }

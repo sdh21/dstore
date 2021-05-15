@@ -7,9 +7,9 @@ import (
 )
 
 type DBState struct {
-	tables         map[string]*TableState
-	mu             sync.RWMutex
-	lastProposalId int64
+	Tables                map[string]*TableState
+	mu                    sync.RWMutex
+	LastAppliedProposalId int64
 }
 
 type TableState struct {
@@ -17,11 +17,14 @@ type TableState struct {
 	ProcessedRequests map[string]*TransactionResult
 	TableVersion      int64
 	mu                sync.Mutex
+
+	dirty                               bool
+	lastIncrementalCheckPointProposalId int64
 }
 
 func NewDBState() *DBState {
 	return &DBState{
-		tables: make(map[string]*TableState),
+		Tables: make(map[string]*TableState),
 	}
 }
 
@@ -52,12 +55,12 @@ func (db *KeyValueDB) applyOpWrapper(state *DBState, wrapper *OpWrapper, id int6
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	state.lastProposalId = id
+	state.LastAppliedProposalId = id
 	applyWaitGroup := &sync.WaitGroup{}
 	for idx, transaction := range wrapper.Transactions {
 		ops := transaction.Ops
 
-		table, found := state.tables[transaction.TableId]
+		table, found := state.Tables[transaction.TableId]
 		if !found {
 			if len(ops) == 0 {
 				result.TransactionResults[idx] = &TransactionResult{
@@ -67,7 +70,7 @@ func (db *KeyValueDB) applyOpWrapper(state *DBState, wrapper *OpWrapper, id int6
 				continue
 			} else {
 				table = newTable()
-				state.tables[transaction.TableId] = table
+				state.Tables[transaction.TableId] = table
 			}
 		}
 
@@ -80,6 +83,8 @@ func (db *KeyValueDB) applyOpWrapper(state *DBState, wrapper *OpWrapper, id int6
 				continue
 			}
 		}
+
+		table.dirty = true
 
 		idxC := idx
 		transactionC := transaction

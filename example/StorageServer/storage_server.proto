@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package StorageServer;
+
+option go_package = "dstore/example/StorageServer";
+
+service FileService {
+  rpc RegisterUserRead(RegUserReadArgs) returns (RegUserReadReply);
+  rpc UploadFileInit(UploadInitArgs) returns (UploadInitReply);
+  rpc UploadFileFinish(UploadFinishArgs) returns (UploadFinishReply);
+}
+
+message RegUserReadArgs {
+  string    UserToken = 1;
+  string    FileToken = 2;
+  string    FileKey   = 3;
+}
+
+message RegUserReadReply {
+  string    FileSize  = 1;
+  bool      OK        = 2;
+  string    Message   = 3;
+}
+
+message UploadInitArgs {
+  string    FileKey   = 1;
+  int64     FileSize  = 2;
+  string    UserToken = 3;
+  string    FileToken = 4;
+}
+
+message UploadInitReply {
+  bool      OK        = 1;
+  string    Message   = 2;
+}
+
+message UploadFinishArgs {
+  string    OldFileKey  = 1;
+  string    UserToken   = 2;
+  string    FileToken   = 3;
+  string    NewFileKey  = 4;
+  string    FileSHA512  = 5;
+}
+
+message UploadFinishReply {
+  bool      OK        = 1;
+  string    Message   = 2;
+}

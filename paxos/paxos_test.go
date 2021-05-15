@@ -82,16 +82,18 @@ func createPaxosNoStorage(count int, tag string, t *testing.T) ([]*Peer, []*Paxo
 	for i := 0; i < count; i++ {
 		var err error
 		cfg := &ServerConfig{
-			Peers:             peers,
-			Me:                i,
-			Storage:           &FakeStorage{},
-			Timeout:           10 * time.Second,
-			RandomBackoffMax:  200,
-			HeartbeatInterval: 1000,
-			LeaderTimeout:     10000,
-			LeaderTimeoutRTTs: 10,
+			Peers:                    peers,
+			Me:                       i,
+			Storage:                  &FakeStorage{},
+			Timeout:                  10 * time.Second,
+			RandomBackoffMax:         200,
+			HeartbeatInterval:        1000,
+			LeaderTimeout:            10000,
+			LeaderTimeoutRTTs:        10,
+			TLS:                      utils.TestTlsConfig(),
+			MaxDoneInstancesInMemory: 50000,
 		}
-		pxs[i], err = NewPaxos(cfg, utils.TestTlsConfig())
+		pxs[i], err = NewPaxos(cfg)
 		if err != nil {
 			t.Fatalf("%v", err)
 		}

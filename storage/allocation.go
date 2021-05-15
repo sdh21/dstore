@@ -40,6 +40,19 @@ type blockUnits struct {
 	prev *blockUnits
 	next *blockUnits
 }
+type blockUnitsArray []*blockUnits
+
+func (ua blockUnitsArray) Less(i int, j int) bool {
+	return blockUnitsComparator(ua[i], ua[j]) < 0
+}
+func (ua blockUnitsArray) Len() int {
+	return len(ua)
+}
+func (ua blockUnitsArray) Swap(i int, j int) {
+	t := ua[i]
+	ua[i] = ua[j]
+	ua[j] = t
+}
 
 func blockUnitsComparator(a, b interface{}) int {
 	ua := a.(*blockUnits)
@@ -102,6 +115,11 @@ func (sg *Storage) createFile(size int64, value []byte, writeValue bool, stats *
 	if err != nil {
 		return nil, err
 	}
+	// Set blocks' size
+	for _, block := range blocks {
+		block.Size = sg.blockSize
+	}
+	blocks[len(blocks)-1].Size = uint32(size % int64(sg.blockSize))
 	// write value into file
 	if writeValue {
 		err := sg.writeValueToBlocks(size, value, blocks, stats)
@@ -165,7 +183,8 @@ func (sg *Storage) writeValueToBlocks(size int64, value []byte, blocks []*FileBl
 // ----------------------------------------------------------
 // Allocation & Release
 
-// mark blocks as released and can be allocated later
+// mark blocks as released and can be allocated later; note: only the partial of the block is released
+// as indicated by FileBlockInfo
 func (sg *Storage) releaseBlocks(blocks []*FileBlockInfo, stats *BlockStatistics) {
 	stats.statsLock.Lock()
 	defer stats.statsLock.Unlock()
@@ -461,11 +480,11 @@ func (sg *Storage) openBlock(path string, useMemMap bool) (*OpenedFile, error) {
 	defer sg.openedFilesLock.Unlock()
 	file, found := sg.openedFiles[path]
 	if found {
-		if useMemMap && file.memoryMap == nil {
-			return nil, errors.New("file is already opened in memMap mode")
+		if useMemMap && file.File != nil {
+			return nil, errors.New("file is already opened in file mode")
 		}
-		if !useMemMap && file.File == nil {
-			return nil, errors.New("file is already opened in file readonly mode")
+		if !useMemMap && file.memoryMap != nil {
+			return nil, errors.New("file is already opened in memory map mode")
 		}
 		file.refCount++
 		return file, nil
@@ -489,7 +508,7 @@ func (sg *Storage) openBlock(path string, useMemMap bool) (*OpenedFile, error) {
 			delete(sg.cachedOpenedFiles, path)
 			return cached, nil
 		} else {
-			err := sg.cacheCloseBlock(cached)
+			err := sg.cacheCloseBlockNoLock(cached)
 			if err != nil {
 				return nil, err
 			}
@@ -525,6 +544,10 @@ func (sg *Storage) openBlock(path string, useMemMap bool) (*OpenedFile, error) {
 func (sg *Storage) closeBlock(file *OpenedFile) {
 	sg.openedFilesLock.Lock()
 	defer sg.openedFilesLock.Unlock()
+	if file == nil {
+		log.Printf("WARNING: closeBlock(nil)\n")
+		return
+	}
 	if file.refCount == 0 {
 		panic("ref count is already 0")
 	}
@@ -536,9 +559,7 @@ func (sg *Storage) closeBlock(file *OpenedFile) {
 	}
 }
 
-func (sg *Storage) cacheCloseBlock(file *OpenedFile) error {
-	sg.openedFilesLock.Lock()
-	defer sg.openedFilesLock.Unlock()
+func (sg *Storage) cacheCloseBlockNoLock(file *OpenedFile) error {
 	var err error
 	if file.memoryMap != nil {
 		err = file.memoryMap.Close()
@@ -549,4 +570,10 @@ func (sg *Storage) cacheCloseBlock(file *OpenedFile) error {
 		file.File = nil
 	}
 	return err
+}
+
+func (sg *Storage) cacheCloseBlock(file *OpenedFile) error {
+	sg.openedFilesLock.Lock()
+	defer sg.openedFilesLock.Unlock()
+	return sg.cacheCloseBlockNoLock(file)
 }

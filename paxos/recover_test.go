@@ -18,9 +18,6 @@ import (
 	"time"
 )
 
-// I am still working on paxos persistence.
-// Test here is subject to change.
-
 type DiskStorage struct {
 	storage      *storage.Storage
 	storageStats *storage.BlockStatistics
@@ -280,7 +277,7 @@ func pxRecover(pxa []*Paxos, t *testing.T) []*Paxos {
 		for fi := 0; fi < 300; fi++ {
 			os.Remove(folder + "/log-" + strconv.Itoa(fi))
 		}
-		sg := storage.NewEmptyStorage(folder, 64*1024*1024, 1*1024)
+		sg, _ := storage.NewStorage(folder, 64*1024*1024, 1*1024)
 		stats := sg.CreateBlockGroup(1*1024, "/log-")
 		dsg := &DiskStorage{
 			storage:      sg,
@@ -299,7 +296,8 @@ func pxRecover(pxa []*Paxos, t *testing.T) []*Paxos {
 			ClientCertFile: "../cert/test_cert/client.crt",
 			ClientPKFile:   "../cert/test_cert/client.key",
 		}
-		px, err := NewPaxos(cfg, tlscfg)
+		cfg.TLS = tlscfg
+		px, err := NewPaxos(cfg)
 		if err != nil {
 			t.Fatalf("%v", err)
 		}
@@ -331,7 +329,7 @@ func createPaxosWithStorage(count int, tag string, t *testing.T) ([]*Peer, []*Pa
 		for fi := 0; fi < 300; fi++ {
 			os.Remove(folder + "/log-" + strconv.Itoa(fi))
 		}
-		sg := storage.NewEmptyStorage(folder, 64*1024*1024, 1*1024)
+		sg, _ := storage.NewStorage(folder, 64*1024*1024, 1*1024)
 		stats := sg.CreateBlockGroup(1*1024, "/log-")
 		var err error
 		cfg := getTestStorageConfig()
@@ -350,7 +348,8 @@ func createPaxosWithStorage(count int, tag string, t *testing.T) ([]*Peer, []*Pa
 			ClientCertFile: "../cert/test_cert/client.crt",
 			ClientPKFile:   "../cert/test_cert/client.key",
 		}
-		pxs[i], err = NewPaxos(cfg, tlscfg)
+		cfg.TLS = tlscfg
+		pxs[i], err = NewPaxos(cfg)
 		if err != nil {
 			t.Fatalf("%v", err)
 		}

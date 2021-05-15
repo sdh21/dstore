@@ -1,6 +1,7 @@
-package forwarder
+package StorageServer
 
 import (
+	"context"
 	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/sdh21/dstore/storage"
@@ -14,37 +15,17 @@ import (
 	"time"
 )
 
-// StorageServer wraps a storage.Storage and provides HTTP API,
-// so users can directly talk to storage servers instead of
-// asking forwarders to forward requests.
-type StorageServer struct {
-	// authentication, user-storage-token->files
-	mu     sync.Mutex
-	tokens map[string]*StorageData
-	sg     *storage.Storage
-}
+func (ss *StorageServer) RegisterUserRead(ctx context.Context, args *RegUserReadArgs) (*RegUserReadReply, error) {
+	user := ss.GetOrCreateUser(args.UserToken)
 
-type StorageData struct {
-	// tokens -> keys of readonly files
-	tokensRead map[string]string
-	// tokens -> keys of pre-allocated files
-	tokensWrite  map[string]string
-	mu           sync.Mutex
-	readHandlers map[string]*FileContentHandler
-}
+	user.mu.Lock()
+	defer user.mu.Unlock()
 
-const BlockSize = 64 * 1024 * 1024
-const AllocUnitSize = 4 * 1024
+	user.tokensRead[args.FileToken] = args.FileKey
+	// TODO: add expiration and renewal
 
-func NewStorageServer(folder string) (*StorageServer, error) {
-	sg, err := storage.NewStorage(folder, BlockSize, AllocUnitSize)
-	if err != nil {
-		return nil, err
-	}
-	ss := &StorageServer{}
-	ss.sg = sg
-	ss.tokens = map[string]*StorageData{}
-	return ss, nil
+	reply := &RegUserReadReply{OK: true}
+	return reply, nil
 }
 
 func (ss *StorageServer) GetFile() gin.HandlerFunc {
@@ -64,16 +45,7 @@ func (ss *StorageServer) GetFile() gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		ss.mu.Lock()
-		data, found := ss.tokens[userToken]
-		ss.mu.Unlock()
-		if !found {
-			c.AbortWithStatus(http.StatusUnauthorized)
-			return
-		}
-		data.mu.Lock()
-		fileKey, found := data.tokensRead[fileToken]
-		data.mu.Unlock()
+		fileKey, found := ss.GetReadFileKey(userToken, fileToken)
 		if !found {
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
@@ -84,18 +56,20 @@ func (ss *StorageServer) GetFile() gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}
-		data.mu.Lock()
-		handler, found := data.readHandlers[fileKey]
+
+		ss.readHandlersLock.Lock()
+		handler, found := ss.readHandlers[fileKey]
 		if !found {
 			handler = NewFileContentHandler(fmd, ss.sg)
-			data.readHandlers[fileKey] = handler
+			ss.readHandlers[fileKey] = handler
 		}
-		data.mu.Unlock()
+		ss.readHandlersLock.Unlock()
+
 		// do not let ServeContent sniff mime by reading the file
 		ctype := mime.TypeByExtension(filepath.Ext(fileName))
 		c.Writer.Header().Set("Content-Type", ctype)
 		handler.mu.Lock()
-		http.ServeContent(c.Writer, c.Request, "",
+		http.ServeContent(c.Writer, c.Request, "123456",
 			time.Now(), handler)
 		handler.mu.Unlock()
 		return
@@ -109,24 +83,6 @@ type FileContentHandler struct {
 	blockChecked  []bool
 	currentOffset int64
 	mu            sync.Mutex
-}
-
-func (fc *FileContentHandler) Seek(offset int64, whence int) (int64, error) {
-	newOffset := fc.currentOffset
-	if whence == io.SeekStart {
-		newOffset = offset
-	} else if whence == io.SeekCurrent {
-		newOffset += offset
-	} else if whence == io.SeekEnd {
-		newOffset = fc.fmd.FileSize - offset
-	} else {
-		return -1, errors.New("whence not valid")
-	}
-	if newOffset > fc.fmd.FileSize || newOffset < 0 {
-		return -1, errors.New("offset not valid")
-	}
-	fc.currentOffset = newOffset
-	return fc.currentOffset, nil
 }
 
 func NewFileContentHandler(fmd *storage.FileMetadata, sg *storage.Storage) *FileContentHandler {
@@ -151,31 +107,54 @@ func NewFileContentHandler(fmd *storage.FileMetadata, sg *storage.Storage) *File
 	}
 }
 
-// Reads a block and checks a block's crc32.
-func (fc *FileContentHandler) read(idx int64, ret []byte) (int64, error) {
-	checked := fc.blockChecked[idx]
-	var checksum hash.Hash32
-	if !checked {
-		checksum = crc32.NewIEEE()
+func (fc *FileContentHandler) Seek(offset int64, whence int) (int64, error) {
+	newOffset := fc.currentOffset
+	if whence == io.SeekStart {
+		newOffset = offset
+	} else if whence == io.SeekCurrent {
+		newOffset += offset
+	} else if whence == io.SeekEnd {
+		newOffset = fc.fmd.FileSize - offset
+	} else {
+		return -1, errors.New("whence not valid")
 	}
+	if newOffset > fc.fmd.FileSize || newOffset < 0 {
+		return -1, errors.New("offset not valid")
+	}
+	fc.currentOffset = newOffset
+	return fc.currentOffset, nil
+}
+
+func (fc *FileContentHandler) readInBlock(blockIndex int64, offset int64, buf []byte) (int64, error) {
+	block := fc.fmd.Blocks[blockIndex]
+	if offset > int64(block.Size) {
+		return 0, errors.New("offset exceeds valid size")
+	}
+	if offset >= int64(block.Size) {
+		return 0, nil
+	}
+
+	bytesRead, err := fc.sg.GetBlockContent(block, offset, buf)
+	if err != nil {
+		return 0, err
+	}
+	return bytesRead, nil
+}
+
+// Reads a block and checks a block's crc32.
+func (fc *FileContentHandler) checkBlock(idx int64) (int64, error) {
+	checked := fc.blockChecked[idx]
+	if checked {
+		return 0, nil
+	}
+	var checksum hash.Hash32
+	checksum = crc32.NewIEEE()
+
 	// OpenBlock is multi-thread safe
 	block := fc.fmd.Blocks[idx]
 	contentSize := int64(block.Size)
-	file, err := fc.sg.GetLargeFileOpenBlock(block)
-	defer func() {
-		_ = fc.sg.GetLargeFileCloseBlock(file)
-	}()
-	if err != nil {
-		return -1, err
-	}
-	_, err = file.File.Seek(int64(block.Offset)*int64(AllocUnitSize), io.SeekStart)
-	if err != nil {
-		return -1, err
-	}
 
 	offset := int64(0)
-	retOffset := int64(0)
-	sizeNeeded := int64(len(ret))
 	for {
 		if contentSize == offset {
 			break
@@ -184,12 +163,12 @@ func (fc *FileContentHandler) read(idx int64, ret []byte) (int64, error) {
 		if contentSize-offset < 16384 {
 			buf = make([]byte, contentSize-offset)
 		}
-		n, err := file.File.Read(buf)
+		bytesRead, err := fc.sg.GetBlockContent(block, offset, buf)
 		if err != nil {
 			return -1, err
 		}
-		if n != len(buf) {
-			return -1, errors.New("unknown")
+		if bytesRead != int64(len(buf)) {
+			return -1, errors.New("internal error: buf != bytesRead")
 		}
 		if !checked {
 			_, err = checksum.Write(buf)
@@ -198,9 +177,6 @@ func (fc *FileContentHandler) read(idx int64, ret []byte) (int64, error) {
 			}
 		}
 		offset += int64(len(buf))
-		if retOffset < sizeNeeded {
-			retOffset += int64(copy(ret[retOffset:], buf))
-		}
 	}
 	if !checked {
 		if checksum.Sum32() != block.Crc32Checksum {
@@ -208,24 +184,28 @@ func (fc *FileContentHandler) read(idx int64, ret []byte) (int64, error) {
 		}
 	}
 	fc.blockChecked[idx] = true
-	return retOffset, nil
+	return 0, nil
 }
 
 func (fc *FileContentHandler) Read(p []byte) (int, error) {
-	currentBlock := fc.currentOffset / BlockSize
 	pSize := int64(len(p))
 	pOffset := int64(0)
-	var err error
 	for {
-		pOffset, err = fc.read(currentBlock, p[pOffset:])
+		currentBlock := fc.currentOffset / BlockSize
+		offsetInner := fc.currentOffset % BlockSize
+		_, err := fc.checkBlock(currentBlock)
 		if err != nil {
 			return 0, err
 		}
+		bytesRead, err := fc.readInBlock(currentBlock, offsetInner, p[pOffset:])
+		if err != nil {
+			return 0, err
+		}
+		fc.currentOffset += bytesRead
+		pOffset += bytesRead
 		if pOffset >= pSize {
 			break
 		}
-		currentBlock++
 	}
-	fc.currentOffset += pSize
-	return int(pSize), nil
+	return int(pOffset), nil
 }

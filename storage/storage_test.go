@@ -64,18 +64,12 @@ func TestLoadWriteBlockInfo(t *testing.T) {
 
 func createTempStorage() *Storage {
 	folder := "/home/linux/Desktop/store-test"
+	_ = os.RemoveAll(folder)
 	_ = os.Mkdir(folder, os.FileMode(0777))
 	//fmt.Printf("%v\n", err)
 	_ = os.Mkdir(folder+"/data-blocks", os.FileMode(0777))
 	_ = os.Mkdir(folder+"/file-metadata-blocks", os.FileMode(0777))
-	//fmt.Printf("%v\n", err)
-	for i := 0; i < 300; i++ {
-		_ = os.Remove(folder + "/data-blocks/data-" + strconv.Itoa(i))
-	}
-	for i := 0; i < 100; i++ {
-		_ = os.Remove(folder + "/file-metadata-blocks/fmd-" + strconv.Itoa(i))
-	}
-	sg := NewEmptyStorage(folder, BLOCKSIZE, ALLOCSIZE)
+	sg, _ := NewStorage(folder, BLOCKSIZE, ALLOCSIZE)
 	return sg
 }
 
@@ -406,7 +400,7 @@ func TestCreateSmallFileConcurrent(t *testing.T) {
 		checkEqual(testf.content, t, testf.fmd.Blocks, false, sg)
 	}
 
-	if int(sg.fileEntries.fileCount) != len(testfiles) {
+	if int(len(sg.fileEntries.key2file)) != len(testfiles) {
 		fmt.Printf("file count wrong")
 		t.FailNow()
 	}
@@ -491,7 +485,7 @@ func TestCreateLargerFileConcurrent(t *testing.T) {
 		checkEqual(testf.content, t, testf.fmd.Blocks, false, sg)
 	}
 
-	if int(sg.fileEntries.fileCount) != len(testfiles) {
+	if int(len(sg.fileEntries.key2file)) != len(testfiles) {
 		fmt.Printf("file count wrong")
 		t.FailNow()
 	}

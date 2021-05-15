@@ -1,24 +1,19 @@
 package paxos
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/gob"
 	"errors"
 	"github.com/sdh21/dstore/utils"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
-	"io"
 	"log"
 	"math"
 	"math/rand"
 	"net"
-	"os"
 	"reflect"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,11 +65,6 @@ type TestParams struct {
 	whichInstanceHoldProposalLock     int64
 	// Detector will not release recorded instances and thus cause memory leak!
 	FastPathProposalIdCollisionDetectorEnabled bool
-}
-
-type PersistentStorage interface {
-	Write(key string, size int64, value []byte) error
-	Delete(key string) error
 }
 
 type Paxos struct {
@@ -153,6 +143,15 @@ type Paxos struct {
 	prepareNToStorageKeyLock sync.Mutex
 
 	doneInstancesCleanerLock sync.Mutex
+
+	// once an instance is done, we can
+	// safely free its memory, but we allow
+	// maxInstancesInMemory done instances
+	// to still remain in memory.
+	maxInstancesInMemory int64
+
+	// Can we accept?
+	acceptorMode bool
 }
 
 const ServerIdBits int = 4
@@ -208,7 +207,7 @@ func (px *Paxos) establishConnection(peerId int, force bool) error {
 	return nil
 }
 
-// The legacy Propose which does propose until we succeed.
+// Propose : legacy Propose which does propose until we succeed.
 // Non-leader can also do propose, and it will work like Basic Paxos.
 func (px *Paxos) Propose(instanceId int64, value interface{}) {
 	go func() {
@@ -226,7 +225,7 @@ func (px *Paxos) Propose(instanceId int64, value interface{}) {
 	}()
 }
 
-// Force a server to become leader. All holes (missing instances) will be filled if
+// ForceElectMe forces a server to become leader. All holes (missing instances) will be filled if
 // election succeeds.
 func (px *Paxos) ForceElectMe() ProposeResult {
 	px.sequentialLock.Lock()
@@ -908,6 +907,7 @@ func (px *Paxos) propose(instanceIdFrom int64, value interface{}, learnToInf boo
 		go func() {
 			defer px.waitGroup.Done()
 			if peerID != px.me {
+				// FIXME: this is a temporary solution.
 				// keep trying to avoid missing logs, since we do not yet
 				// have a strategy to ask for logs if applier cannot make progress
 				for tryNotify := int64(0); tryNotify < 10; tryNotify++ {
@@ -959,7 +959,8 @@ type ProposeValueResult struct {
 	InstanceId int64
 }
 
-//  Just propose a value, ProposeValue will check leadership, select an instance id and do propose.
+// ProposeValue just proposes a value.
+//  ProposeValue will check leadership, select an instance id and do propose.
 //  If we are not leader, ProposeValue will fail.
 //  ProposeValue will block until our value is decided OR we fail.
 //  ProposeValue can be concurrently called.
@@ -1052,15 +1053,24 @@ func (px *Paxos) GetMe() int {
 	return px.me
 }
 
-// the application no longer needs instances <= instanceId.
+// Done is called to claim the application no longer needs instances <= instanceId.
 func (px *Paxos) Done(instanceId int64) {
+	instances := px.instancesToStorageKey.PopInstancesBefore(instanceId + 1)
+	for _, ins := range instances {
+		ins.lock.Lock()
+		for _, key := range ins.tag {
+			err := px.storage.Delete(key)
+			if err != nil {
+				log.Fatalf("Done: cannot delete paxos log " + err.Error())
+			}
+		}
+		ins.lock.Unlock()
+	}
 	go px.updateMinimumInstanceIdNeeded(px.me, instanceId+1)
 }
 
-// the application wants to know the
-// highest instance ID known to
+// Max returns the highest instance ID known to
 // this peer.
-//
 func (px *Paxos) Max() int64 {
 	return px.instances.GetHighestIndex()
 }
@@ -1087,32 +1097,22 @@ func (px *Paxos) getMin() int64 {
 	return doneByAll
 }
 
-// Still working on this.
-// dump instances < instanceId and free memory
-func (px *Paxos) dumpInstance(instanceId int64) {
-	px.instances.PopInstancesBefore(instanceId)
-}
-
-// TODO:
-/*
-func (px *Paxos) readInstanceFromDisk(instanceId int64) (*Instance, bool) {
-	instance := &Instance{InstanceId: instanceId}
-	storageIns, storageOk := px.instancesToStorageKey.GetAtOrCreateAt(instanceId)
-	if !storageOk {
-		// this instance is deleted from disk storage
-		// after all servers reach consensus on Done
-		return nil, false
-	}
-}
-
-*/
-
 // Free instances < getMin().
+// Or in-memory done instances exceeds maxInstancesInMemory
 func (px *Paxos) cleanDoneInstances() {
 	px.doneInstancesCleanerLock.Lock()
 	defer px.doneInstancesCleanerLock.Unlock()
 
 	currentMin := px.getMin()
+
+	myMin := px.getMinimumInstanceIdNeeded(px.me)
+	first := px.instances.GetFirstIndex()
+	if myMin-first > px.maxInstancesInMemory {
+		alternateMin := first + px.maxInstancesInMemory
+		if alternateMin > currentMin {
+			currentMin = alternateMin
+		}
+	}
 
 	if px.instances.GetFirstIndex() >= currentMin {
 		// nothing to free
@@ -1121,21 +1121,6 @@ func (px *Paxos) cleanDoneInstances() {
 	utils.Warning("Server %v Done instances' collector is freeing instances < %v",
 		px.me, currentMin)
 	px.instances.PopInstancesBefore(currentMin)
-	// Look up storage and delete disk files
-	storageIns := px.instancesToStorageKey.PopInstancesBefore(currentMin)
-	if storageIns == nil {
-		return
-	}
-	for _, ins := range storageIns {
-		ins.lock.Lock()
-		for _, key := range ins.tag {
-			err := px.storage.Delete(key)
-			if err != nil {
-				log.Fatalf("cleanDoneInstances: cannot delete %v, err: %v", key, err)
-			}
-		}
-		ins.lock.Unlock()
-	}
 }
 
 func (px *Paxos) GetInstance(instanceId int64) (bool, interface{}) {
@@ -1151,7 +1136,7 @@ func (px *Paxos) GetInstance(instanceId int64) (bool, interface{}) {
 	return false, nil
 }
 
-// Gracefully shutdown Paxos
+// Close gracefully shutdown Paxos
 func (px *Paxos) Close() {
 	atomic.StoreInt32(&px.closed, 1)
 	if px.server != nil {
@@ -1427,9 +1412,11 @@ type ServerConfig struct {
 	// tests might need this
 	Listener                     net.Listener
 	AdditionalTimeoutPer100Holes time.Duration
+	TLS                          *utils.MutualTLSConfig
+	MaxDoneInstancesInMemory     int
 }
 
-func NewPaxos(config *ServerConfig, tlsConfig *utils.MutualTLSConfig) (*Paxos, error) {
+func NewPaxos(config *ServerConfig) (*Paxos, error) {
 	gob.Register(&ValueWrapper{})
 	rand.Seed(time.Now().UTC().UnixNano())
 
@@ -1459,6 +1446,10 @@ func NewPaxos(config *ServerConfig, tlsConfig *utils.MutualTLSConfig) (*Paxos, e
 			LatencyUpperBound:      0,
 		},
 		instancesToStorageKey: NewArrayQueue(1),
+		maxInstancesInMemory:  int64(config.MaxDoneInstancesInMemory),
+	}
+	if config.MaxDoneInstancesInMemory == 0 {
+		return nil, errors.New("MaxDoneInstancesInMemory should be larger than 0")
 	}
 
 	// copy peers' data to avoid shared pointer
@@ -1478,7 +1469,7 @@ func NewPaxos(config *ServerConfig, tlsConfig *utils.MutualTLSConfig) (*Paxos, e
 
 	px.storage = config.Storage
 
-	serverTLSConfig, clientTLSConfig, err := utils.LoadMutualTLSConfig(tlsConfig)
+	serverTLSConfig, clientTLSConfig, err := utils.LoadMutualTLSConfig(config.TLS)
 
 	if err != nil {
 		return nil, err
@@ -1493,147 +1484,4 @@ func NewPaxos(config *ServerConfig, tlsConfig *utils.MutualTLSConfig) (*Paxos, e
 	px.server = server
 
 	return px, nil
-}
-
-// ------------------------------------------------
-//   Paxos Instances Reconstruction/Recover
-
-//  Reconstruct Paxos: load instances from disk files and
-//       create a Paxos consistent to the one before
-//       crashing.
-//
-type ReconstructionResult struct {
-	MinimumInstanceId int64 // the smallest instance we can recover
-	LogEntriesCount   int64 // how many log entries we've found
-}
-
-//  Reconstruct Paxos if server crashed
-//  Should be called before StartServer
-//  Warning: caller must pass a new storage(a new folder) to NewPaxos, different from where logFiles lie in, and
-//  ReconstructPaxos cannot check this.
-//  Recovered logs will be written to the ServerConfig.Storage by calling the Write method.
-func (px *Paxos) ReconstructPaxos(logFiles []string) (*ReconstructionResult, error) {
-
-	id2ins := map[int64]*Instance{}
-	highestInstanceId := int64(-1)
-	minimumInstanceId := int64(-1)
-	logEntriesCount := int64(0)
-
-	for _, file := range logFiles {
-		f, err := os.Open(file)
-		if err != nil {
-			return nil, err
-		}
-		emptyBuf := make([]byte, 1024)
-		for {
-			entryContent := bytes.Buffer{}
-			buf := make([]byte, 1024)
-			_, err = io.ReadFull(f, buf)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, err
-			}
-			if buf[0] == 0 {
-				if bytes.Equal(emptyBuf, buf) {
-					continue
-				}
-			}
-			entryContent.Write(buf)
-			if !bytes.Equal(buf[0:len(logPrefix)], []byte(logPrefix)) {
-				return nil, errors.New("paxos log corrupted")
-			}
-			index := len(logPrefix)
-			length := int(binary.BigEndian.Uint32(buf[index : index+4]))
-			entryLength := len(logPrefix) + len(logSuffix) + 8 + length
-			padding := 0
-			if entryLength%1024 != 0 {
-				padding = 1024 - entryLength%1024
-			}
-			if entryLength+padding > 1024 {
-				buf2 := make([]byte, entryLength+padding)
-				_, err = io.ReadFull(f, buf2)
-				if err == io.EOF {
-					return nil, errors.New("reconstruction: unexpected EOF")
-				}
-				if err != nil {
-					return nil, err
-				}
-				entryContent.Write(buf2)
-			}
-			instance, np, high, err := px.decodeInstance(entryContent.Bytes())
-			if err != nil {
-				return nil, err
-			}
-			id := instance.InstanceId
-			if id == -1 {
-				// this is a prepare log, no instance info
-			} else {
-				if id2ins[id] == nil || instance.HighestAcN > id2ins[id].HighestAcN {
-					id2ins[id] = instance
-				}
-				if high > highestInstanceId {
-					highestInstanceId = high
-				}
-				if id < minimumInstanceId || minimumInstanceId == -1 {
-					minimumInstanceId = id
-				}
-			}
-
-			//fmt.Printf("np: %v, instance: %v\n", np, instance)
-			if np > px.highestNpSeen {
-				px.highestNpSeen = np
-			}
-
-			logEntriesCount++
-		}
-	}
-
-	px.instances.GetAtOrCreateAt(highestInstanceId)
-	for _, ins := range id2ins {
-		inst, found := px.instances.GetAt(ins.InstanceId)
-		if !found {
-			log.Fatalf("maybe queue impl error? or log corrupted")
-		}
-		if inst.InstanceId != ins.InstanceId {
-			log.Fatalf("queue impl error, inconsistent instance id")
-		}
-
-		inst.HighestAcN = ins.HighestAcN
-		inst.HighestAcV = ins.HighestAcV
-	}
-
-	if minimumInstanceId == -1 {
-		return nil, errors.New("reconstruction: no instance found")
-	}
-
-	for i := minimumInstanceId; i <= highestInstanceId; i++ {
-		// write to new folder
-		instance, ok := px.instances.GetAt(i)
-		if !ok {
-			return nil, errors.New("maybe queue wrong impl")
-		}
-		if instance.InstanceId != i {
-			return nil, errors.New("maybe queue wrong impl")
-		}
-		if instance != nil {
-			key := strconv.Itoa(int(instance.InstanceId)) + "-" + strconv.Itoa(int(px.highestNpSeen))
-			length, content := px.encodeInstance(instance, px.highestNpSeen, highestInstanceId)
-
-			err := px.storage.Write(key, length, content)
-			if err != nil {
-				log.Fatalf("cannot write paxos log " + err.Error())
-			}
-			if instance.HighestAcN != -1 && instance.InstanceId > px.highestInstanceAccepted {
-				px.highestInstanceAccepted = instance.InstanceId
-			}
-		}
-	}
-
-	result := &ReconstructionResult{
-		MinimumInstanceId: minimumInstanceId,
-		LogEntriesCount:   logEntriesCount,
-	}
-	return result, nil
 }

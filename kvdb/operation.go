@@ -288,6 +288,8 @@ func MakeAnyValue(value interface{}) *AnyValue {
 		return &AnyValue{Type: "Str", Str: value.(string)}
 	case int64:
 		return &AnyValue{Type: "Int", Num: value.(int64)}
+	case int:
+		return &AnyValue{Type: "Int", Num: (int64)(value.(int))}
 	case []byte:
 		return &AnyValue{Type: "Bin", Bin: value.([]byte)}
 	case map[string]*AnyValue:

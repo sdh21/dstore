@@ -11,123 +11,59 @@ import (
 
 const FlagMetadata = 0b0001
 const FlagFileInvalid = 0b0010
-const FlagFileDeleted = 0b0100
+const FlagFileDeleted = 0b0100 | FlagFileInvalid
 
 type FileEntries struct {
-	// how many files are in the storage
-	fileCount int64
-	lock      sync.Mutex
-	key2file  map[string]*FileMetadata
+	lock     sync.Mutex
+	key2file map[string]*FileMetadata
 }
 
-// update a key->FileMetadata mapping
-// THIS METHOD IS NOT TESTED. I AM NOT USING IT.
-func (sg *Storage) updateMetadata(key string, newFmd *FileMetadata) error {
+func (sg *Storage) getFmdByKey(key string) (*FileMetadata, error) {
 	sg.fileEntries.lock.Lock()
 	fmd, found := sg.fileEntries.key2file[key]
 	sg.fileEntries.lock.Unlock()
 	if !found {
-		return errors.New("key does not exist")
+		return nil, errors.New("key does not exist")
 	}
-	buf := sg.writeFileMetadataToBuf(newFmd)
-	size := int64(len(buf))
-	if size > int64(fmd.myBlock.Size) {
-		// check if we need more alloc units
-		spr := fmd.myBlock.Units*sg.blockMetaStats.allocationUnitSize - fmd.myBlock.Size
-		if int64(spr) > size-int64(fmd.FileSize) {
-			// we need to allocate more units
-			unitCount := uint32(divCeil(size, int64(sg.blockMetaStats.allocationUnitSize)))
-			blocks, err := sg.allocateUnits(unitCount, sg.blockMetaStats)
-			if err != nil {
-				return err
-			}
-			if len(blocks) != 1 {
-				return errors.New("impl, metadata file can only have one block")
-			}
-			err = sg.writeValueToBlocks(size, buf, blocks, sg.blockMetaStats)
-			if err != nil {
-				return err
-			}
-			newFmd.myBlock = blocks[0]
-			// OK.
-			sg.fileEntries.lock.Lock()
-			sg.fileEntries.key2file[key] = newFmd
-			sg.fileEntries.lock.Unlock()
-			// Release the old block
-			sg.releaseBlocks([]*FileBlockInfo{fmd.myBlock}, sg.blockMetaStats)
-			return nil
-		}
-	}
-	// no need to allocate more units
-	err := sg.writeValueToBlocks(size, buf, []*FileBlockInfo{fmd.myBlock}, sg.blockMetaStats)
+	err := sg.loadFileMetadata(fmd)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	newFmd.myBlock = fmd.myBlock
-	sg.fileEntries.lock.Lock()
-	sg.fileEntries.key2file[key] = newFmd
-	sg.fileEntries.lock.Unlock()
-	return nil
+	return fmd, nil
 }
 
+// FileMetadata will not be locked; consider it invalid when calling this function.
 func (sg *Storage) deleteFile(fmd *FileMetadata) {
 	if (fmd.Flag & FlagFileDeleted) != 0 {
 		return
 	}
 	sg.fileEntries.lock.Lock()
 	delete(sg.fileEntries.key2file, fmd.Key)
-	sg.fileEntries.fileCount--
 	sg.fileEntries.lock.Unlock()
 
 	sg.releaseBlocks([]*FileBlockInfo{fmd.myBlock}, sg.blockMetaStats)
 	sg.releaseBlocks(fmd.Blocks, sg.blockFileStats)
 	fmd.Flag |= FlagFileDeleted
 	// TODO: sync to disk
-
 }
 
-//  replace a (small) file's content with new value
-func (sg *Storage) updateFile(fmd *FileMetadata, size int64, value []byte) error {
-	stats := sg.blockFileStats
-	if size > fmd.FileSize {
-		// check if we need more alloc units
-		// we do not know which blocks have spare spaces (though we can assume they only lie at the end)
-		// just do an iteration given that it is a small file
-		spr := int64(0)
-		for _, block := range fmd.Blocks {
-			spr += int64(block.Units*stats.allocationUnitSize - block.Size)
-		}
-		if spr > size-fmd.FileSize {
-			// we need more alloc units
-			// release the old one
-			sg.releaseBlocks(fmd.Blocks, stats)
-			// just create a new file
-			blocks, err := sg.createFile(size, nil, false, stats)
-			if err != nil {
-				return err
-			}
-			fmd.Blocks = blocks
-		}
-	}
+// recreateMetadata deletes the old FileMetadata without releasing blocks, and
+// creates a new mapping between key and a new FileMetadata with identical block information.
+func (sg *Storage) recreateMetadata(key string, oldFmd *FileMetadata, flag uint16) error {
+	oldFmd.lock.Lock()
+	oldFmd.Flag |= FlagFileDeleted
+	oldKey := oldFmd.Key
 
-	err := sg.writeValueToBlocks(size, value, fmd.Blocks, stats)
-	if err != nil {
-		return err
-	}
+	sg.fileEntries.lock.Lock()
+	delete(sg.fileEntries.key2file, oldKey)
+	sg.fileEntries.lock.Unlock()
 
-	newFmd := &FileMetadata{
-		myBlock:    nil,
-		Key:        fmd.Key,
-		BlockCount: uint32(len(fmd.Blocks)),
-		FileSize:   size,
-		Blocks:     fmd.Blocks,
-		Flag:       FlagMetadata,
-	}
-	err = sg.updateMetadata(fmd.Key, newFmd)
-	if err != nil {
-		return err
-	}
-	return nil
+	sg.releaseBlocks([]*FileBlockInfo{oldFmd.myBlock}, sg.blockMetaStats)
+
+	_, err := sg.createMetadata(key, oldFmd.FileSize, oldFmd.Blocks, flag)
+
+	oldFmd.lock.Unlock()
+	return err
 }
 
 func (sg *Storage) createMetadata(key string, size int64, blocks []*FileBlockInfo, flag uint16) (*FileMetadata, error) {
@@ -151,9 +87,12 @@ func (sg *Storage) createMetadata(key string, size int64, blocks []*FileBlockInf
 	meta.myBlock = file[0]
 
 	sg.fileEntries.lock.Lock()
-	sg.fileEntries.fileCount++
+	defer sg.fileEntries.lock.Unlock()
+	_, found := sg.fileEntries.key2file[key]
+	if found {
+		return nil, errors.New("impl, duplicate key")
+	}
 	sg.fileEntries.key2file[key] = meta
-	sg.fileEntries.lock.Unlock()
 	return meta, nil
 }
 
@@ -161,6 +100,8 @@ func (sg *Storage) createMetadata(key string, size int64, blocks []*FileBlockInf
 // File Metadata Persistence
 
 func (sg *Storage) writeFileMetadataToBuf(fmd *FileMetadata) []byte {
+	fmd.lock.Lock()
+	defer fmd.lock.Unlock()
 	buf := new(bytes.Buffer)
 	header := make([]byte, 16)
 	buf.WriteString(fmd.Key)
@@ -185,8 +126,10 @@ func (sg *Storage) writeFileMetadataToBuf(fmd *FileMetadata) []byte {
 	return result
 }
 
-// Load a file metadata from disk. To update file metadata, call updateMetadata.
+// Load a file metadata from disk.
 func (sg *Storage) loadFileMetadata(fmd *FileMetadata) error {
+	fmd.lock.Lock()
+	defer fmd.lock.Unlock()
 	if fmd == nil {
 		return errors.New("file metadata is nil")
 	}
@@ -242,6 +185,13 @@ func (sg *Storage) loadFileMetadata(fmd *FileMetadata) error {
 	}
 	fmd.loaded = true
 	return nil
+}
+
+// currently a no-op
+func (sg *Storage) unloadFileMetadata(fmd *FileMetadata) {
+	fmd.lock.Lock()
+	defer fmd.lock.Unlock()
+	fmd.loaded = false
 }
 
 func (sg *Storage) loadBlockInfoFromBuf(buf []byte) *FileBlockInfo {

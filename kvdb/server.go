@@ -75,13 +75,14 @@ type KeyValueDB struct {
 	requestsBlockListLock sync.Mutex
 	waitingCount          int64
 
-	checkpoint *checkpointState
+	checkpoint *checkpointInst
 
 	UnimplementedKeyValueDBServer
 }
 
 type DBConfig struct {
 	StorageFolder    string
+	PaxosFolder      string
 	StorageBlockSize uint32
 	AllocationUnit   uint32
 	PaxosConfig      *paxos.ServerConfig
@@ -91,12 +92,17 @@ type DBConfig struct {
 	// All DB servers, not used
 	Addresses []string
 	Listener  net.Listener
+
+	TLS *utils.MutualTLSConfig
+
+	Checkpoint CheckpointConfig
 }
 
 func DefaultConfig() *DBConfig {
 	config := &DBConfig{}
 	config.StorageBlockSize = 64 * 1024 * 1024
 	config.AllocationUnit = 4 * 1024
+	config.TLS = utils.TestTlsConfig()
 	config.PaxosConfig = &paxos.ServerConfig{
 		Peers:                        nil,
 		Me:                           0,
@@ -109,35 +115,17 @@ func DefaultConfig() *DBConfig {
 		DecideChannel:                make(chan paxos.DecideEvent, 100),
 		Listener:                     nil,
 		AdditionalTimeoutPer100Holes: 100 * time.Millisecond,
+		TLS:                          utils.TestTlsConfig(),
 	}
 	return config
 }
 
-func initializePaxos(config *DBConfig, tlsConfig *utils.MutualTLSConfig) (*paxos.Paxos, error) {
-	folder := config.StorageFolder + "/paxos"
-	sg := storage.NewEmptyStorage(folder, config.StorageBlockSize, config.AllocationUnit)
-	stats := sg.CreateBlockGroup(config.AllocationUnit, "/log-")
-
-	dsk := &DiskStorage{
-		storage:      sg,    // sg
-		storageStats: stats, //stats
-		key2block:    map[string][]*storage.FileBlockInfo{},
-		folder:       folder,
-	}
-	config.PaxosConfig.Storage = dsk
-	px, err := paxos.NewPaxos(config.PaxosConfig, tlsConfig)
-	if err != nil {
-		return nil, err
-	}
-	return px, nil
-}
-
 const MaxGRPCMsgSize = 512 * 1024 * 1024
 
-func NewServer(config *DBConfig, tlsConfig *utils.MutualTLSConfig) (*KeyValueDB, error) {
+func NewServer(config *DBConfig) (*KeyValueDB, error) {
 
 	db := &KeyValueDB{}
-	px, err := initializePaxos(config, tlsConfig)
+	px, err := initializePaxos(config)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +135,7 @@ func NewServer(config *DBConfig, tlsConfig *utils.MutualTLSConfig) (*KeyValueDB,
 		return nil, err
 	}
 
-	serverTLSConfig, _, err := utils.LoadMutualTLSConfig(tlsConfig)
+	serverTLSConfig, _, err := utils.LoadMutualTLSConfig(config.TLS)
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +243,7 @@ func (db *KeyValueDB) waitDecide() {
 			if !ok {
 				break
 			}
+			db.checkpoint.eventChannel <- event
 			atomic.StoreInt64(&db.lastProposalId, event.InstanceId)
 			if event.DecidedValue == nil {
 				continue
@@ -291,7 +280,7 @@ func (db *KeyValueDB) waitDecide() {
 	}()
 }
 
-// Gracefully shutdown server
+// Close gracefully shutdowns server
 func (db *KeyValueDB) Close() {
 	atomic.StoreInt32(&db.closed, 1)
 	db.px.Close()

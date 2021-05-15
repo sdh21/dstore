@@ -64,12 +64,14 @@ func createServers(t *testing.T, count int) ([]*KeyValueDB, []string) {
 		config.PaxosConfig.Listener = listeners[i]
 		config.PaxosConfig.Peers = peers
 		config.PaxosConfig.Me = i
+		config.PaxosConfig.TLS = utils.TestTlsConfig()
+		config.TLS = utils.TestTlsConfig()
 		l, e := net.Listen("tcp", "127.0.0.1:0")
 		if e != nil {
 			log.Fatal("listen error: ", e)
 		}
 		config.DBAddress = l.Addr().String()
-		server, err := NewServer(config, utils.TestTlsConfig())
+		server, err := NewServer(config)
 		if err != nil {
 			t.Fatalf("error: %v", e)
 		}
@@ -173,8 +175,8 @@ func checkConsistency(t *testing.T, servers []*KeyValueDB) {
 	}
 
 	for _, server := range servers {
-		v, _ := json.Marshal(server.state.tables)
-		v2, _ := json.Marshal(servers[0].state.tables)
+		v, _ := json.Marshal(server.state.Tables)
+		v2, _ := json.Marshal(servers[0].state.Tables)
 		if !bytes.Equal(v, v2) {
 			t.Fatalf("not consistent, got %v,\n want %v", string(v),
 				string(v2))

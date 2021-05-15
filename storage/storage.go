@@ -1,13 +1,11 @@
 package storage
 
 import (
-	"bufio"
-	"encoding/binary"
+	"crypto/sha512"
+	"encoding/hex"
 	"errors"
 	"github.com/emirpasic/gods/trees/redblacktree"
-	"io"
-	"log"
-	"os"
+	"hash/crc32"
 	"sync"
 )
 
@@ -15,12 +13,9 @@ type Storage struct {
 	folder    string
 	blockSize uint32
 
-	entryCount uint32
-	entries    map[string]*Entry
-
 	fileEntries *FileEntries
 
-	// a disk file that is opened
+	// a disk file that is opened and has ref count > 0
 	openedFiles map[string]*OpenedFile
 	// Cache OpenedFile with ref count=0
 	cachedOpenedFiles map[string]*OpenedFile
@@ -31,14 +26,19 @@ type Storage struct {
 	blockMetaStats *BlockStatistics
 }
 
-const entryFileRelativePath = "/storage-metadata"
+const entryFileRelativePath = "/storage"
 const dataBlockRelativePathPrefix = "/data-blocks/data-"
 const metaBlockRelativePathPrefix = "/file-metadata-blocks/fmd-"
+const initFileRelativePath = "/initialized"
 
 const defaultMetadataAllocUnitSize = 1 * 1024 // 1KB
 const defaultBlockSize = 64 * 1024 * 1024     // 64MB
 
-// Empty files are not supported!
+func (sg *Storage) GetFileMetadata(key string) (*FileMetadata, error) {
+	return sg.getFmdByKey(key)
+}
+
+// CreateSmallFile creates a file with the given key and value; empty files are not supported!
 func (sg *Storage) CreateSmallFile(key string, size int64, value []byte) (*FileMetadata, error) {
 	if size == 0 {
 		return nil, errors.New("empty files not supported")
@@ -52,14 +52,12 @@ func (sg *Storage) CreateSmallFile(key string, size int64, value []byte) (*FileM
 }
 
 func (sg *Storage) GetSmallFile(key string) ([]byte, error) {
-	fmd, found := sg.fileEntries.key2file[key]
-	if !found {
-		return nil, errors.New("key does not exist")
-	}
-	err := sg.loadFileMetadata(fmd)
+	fmd, err := sg.getFmdByKey(key)
 	if err != nil {
 		return nil, err
 	}
+	fmd.lock.Lock()
+	defer fmd.lock.Unlock()
 	fileContent := make([]byte, fmd.FileSize)
 	offset := 0
 	for _, block := range fmd.Blocks {
@@ -77,56 +75,123 @@ func (sg *Storage) GetSmallFile(key string) ([]byte, error) {
 }
 
 func (sg *Storage) DeleteFile(key string) error {
-	fmd, found := sg.fileEntries.key2file[key]
-	if !found {
-		return errors.New("key does not exist")
+	fmd, err := sg.getFmdByKey(key)
+	if err != nil {
+		return err
 	}
 	sg.deleteFile(fmd)
 	return nil
 }
 
-//  caller should do CreateLargeFileAlloc -> write file, set crc32, size, ...
-//  -> CreateLargeFileFinish
+// CreateLargeFileAlloc pre-allocates the blocks needed, caller should write blocks by calling CreateLargeFileWrite,
+// and finally call CreateLargeFileFinish
 func (sg *Storage) CreateLargeFileAlloc(key string, size int64) (*FileMetadata, error) {
 	blocks, err := sg.createFile(size, nil, false, sg.blockFileStats)
 	if err != nil {
 		return nil, err
 	}
 	fmd, err := sg.createMetadata(key, size, blocks, FlagFileInvalid)
+	if err != nil {
+		return nil, err
+	}
 	return fmd, err
 }
 
-func (sg *Storage) CreateLargeFileFinish(fmd *FileMetadata) error {
-	err := sg.updateMetadata(fmd.Key, fmd)
-	return err
+type LargeFileIntegrityInfo struct {
+	BlockChecksumCRC32 []uint32
+	BlockSize          uint32
+	FileSHA512         string
 }
 
-func (sg *Storage) GetFileMetadata(key string) (*FileMetadata, error) {
-	fmd, found := sg.fileEntries.key2file[key]
-	if !found {
-		return nil, errors.New("key does not exist")
+// CheckLargeFileIntegrity correctly sets blocks' size and crc32, and
+// compute the file's sha512.
+func (sg *Storage) CheckLargeFileIntegrity(fmd *FileMetadata) (*LargeFileIntegrityInfo, error) {
+	fmd.lock.Lock()
+	defer fmd.lock.Unlock()
+
+	fileSHA512 := sha512.New()
+	result := &LargeFileIntegrityInfo{}
+	result.BlockChecksumCRC32 = make([]uint32, 0)
+
+	for i, block := range fmd.Blocks {
+		block.Size = sg.blockSize
+
+		if i == len(fmd.Blocks)-1 {
+			block.Size = uint32(fmd.FileSize % int64(sg.blockSize))
+		}
+
+		begin := int64(block.Offset) * int64(sg.blockFileStats.allocationUnitSize)
+		end := begin + int64(block.Size)
+
+		file, err := sg.openBlock(block.relativeFilePath, true)
+		if err != nil {
+			return nil, err
+		}
+
+		block.Crc32Checksum = crc32.ChecksumIEEE(file.memoryMap.Data[begin:end])
+		fileSHA512.Write(file.memoryMap.Data[begin:end])
+
+		result.BlockChecksumCRC32 = append(result.BlockChecksumCRC32, block.Crc32Checksum)
+
+		sg.closeBlock(file)
 	}
-	err := sg.loadFileMetadata(fmd)
+
+	result.FileSHA512 = hex.EncodeToString(fileSHA512.Sum(nil))
+	result.BlockSize = sg.blockSize
+	return result, nil
+}
+
+func (sg *Storage) CreateLargeFileFinish(newKey string, fmd *FileMetadata) error {
+	err := sg.recreateMetadata(newKey, fmd, 0)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return fmd, nil
-}
-
-func (sg *Storage) GetLargeFileOpenBlock(block *FileBlockInfo) (*OpenedFile, error) {
-	file, err := sg.openBlock(block.relativeFilePath, false)
-	if err != nil {
-		return nil, err
-	}
-	return file, nil
-}
-
-func (sg *Storage) GetLargeFileCloseBlock(file *OpenedFile) error {
-	sg.closeBlock(file)
 	return nil
 }
 
-// Metadata may be unnecessary for log files, use this method to
+func (sg *Storage) CreateLargeFileWrite(block *FileBlockInfo, offset int64, content []byte) (int64, error) {
+	file, err := sg.openBlock(block.relativeFilePath, true)
+	if err != nil {
+		return 0, err
+	}
+	defer sg.closeBlock(file)
+
+	realOffset := int64(block.Offset)*int64(sg.blockFileStats.allocationUnitSize) + offset
+	if realOffset >= file.memoryMap.Size {
+		return 0, errors.New("invalid offset")
+	}
+
+	file.lock.Lock()
+	defer file.lock.Unlock()
+	length := copy(file.memoryMap.Data[realOffset:], content)
+	return int64(length), nil
+}
+
+// GetBlockContent writes file[offset:] to buf and returns the the number of bytes copied
+func (sg *Storage) GetBlockContent(block *FileBlockInfo, offset int64, buf []byte) (int64, error) {
+	file, err := sg.openBlock(block.relativeFilePath, true)
+	if err != nil {
+		return 0, err
+	}
+	file.lock.Lock()
+	defer file.lock.Unlock()
+	beginPos := int64(block.Offset)*int64(sg.blockFileStats.allocationUnitSize) + offset
+	contentSize := int64(block.Size) - offset
+	bytesToRead := int64(len(buf))
+	if bytesToRead > contentSize {
+		bytesToRead = contentSize
+	}
+	if beginPos+bytesToRead >= file.memoryMap.Size {
+		return 0, errors.New("exceeds memory map size")
+	}
+
+	copy(buf[0:bytesToRead], file.memoryMap.Data[beginPos:beginPos+bytesToRead])
+
+	sg.closeBlock(file)
+	return bytesToRead, nil
+}
+
+// CreateLogFile : Metadata may be unnecessary for log files, use this method to
 // create a log file in user-defined block group(indicated by stats)
 // Users should have their own strategies to recover data from blocks
 func (sg *Storage) CreateLogFile(size int64, value []byte, stats *BlockStatistics) ([]*FileBlockInfo, error) {
@@ -152,103 +217,4 @@ func (sg *Storage) CreateBlockGroup(allocUnitSize uint32, filePrefix string) *Bl
 		spaceInfo:             make([]*BlockSpaceInfo, 0),
 		sequentialUnitsRBTree: redblacktree.NewWith(spareBlocksComparator),
 	}
-}
-
-// ---------------------------------------------------------
-// Storage Initialization and Reconstruction
-
-func (sg *Storage) loadBlockStatistics(file *os.File) error {
-	log.Fatalf("not implemented")
-	return nil
-}
-
-func (sg *Storage) loadEntries(file *os.File) bool {
-	reader := bufio.NewReader(file)
-	buf := make([]byte, 70)
-	_, err := io.ReadFull(reader, buf)
-	if err != nil {
-		return false
-	}
-	sg.blockSize = binary.BigEndian.Uint32(buf[0:4])
-	sg.blockFileStats.allocationUnitSize = binary.BigEndian.Uint32(buf[4:8])
-	sg.entryCount = binary.BigEndian.Uint32(buf[8:12])
-
-	// metadata allocation unit size is always 1KB
-	sg.blockMetaStats.allocationUnitSize = 1 * 1024
-
-	for i := uint32(0); i < sg.entryCount; i++ {
-
-		_, err := io.ReadFull(reader, buf)
-		if err != nil {
-			return false
-		}
-		//flag := uint32(buf[1]) | uint32(buf[0])<<8
-		/*
-			if (flag | entryFlagIsFileMetadata) != 0 {
-				// This entry stores a file metadata
-				fmd := &FileMetadata{}
-				fmdIndex := binary.BigEndian.Uint32(buf[2:6])
-				fmd.myBlock = sg.loadBlockInfoFromBuf(buf[6:20])
-				fmd.myBlock.relativeFilePath = fmt.Sprintf(metaBlockRelativePathPrefix+ "%v", fmdIndex)
-				fmd.Flag = flag
-				//sg.fileEntries.key2file[fmdIndex] = fmd
-			} else {
-				// This entry stores a file
-				key := string(buf[2:66])
-				entry := &Entry{}
-				entry.metadataIndex = binary.BigEndian.Uint32(buf[66:70])
-				entry.flag = flag
-				sg.entries[key] = entry
-			}
-		*/
-
-	}
-	return true
-}
-
-func NewEmptyStorage(folder string, blockSize uint32, allocUnitSize uint32) *Storage {
-	sg := &Storage{}
-	sg.folder = folder
-	sg.blockSize = blockSize
-	sg.entries = map[string]*Entry{}
-	sg.fileEntries = &FileEntries{
-		fileCount: 0,
-		key2file:  map[string]*FileMetadata{},
-	}
-	sg.blockFileStats = &BlockStatistics{
-		allocationUnitSize:    allocUnitSize,
-		unitPerBlock:          sg.blockSize / allocUnitSize,
-		blockAllocCount:       0,
-		pathPrefix:            dataBlockRelativePathPrefix,
-		spaceInfo:             make([]*BlockSpaceInfo, 0),
-		sequentialUnitsRBTree: redblacktree.NewWith(spareBlocksComparator),
-	}
-	sg.blockMetaStats = &BlockStatistics{
-		allocationUnitSize:    defaultMetadataAllocUnitSize,
-		unitPerBlock:          sg.blockSize / allocUnitSize,
-		blockAllocCount:       0,
-		pathPrefix:            metaBlockRelativePathPrefix,
-		spaceInfo:             make([]*BlockSpaceInfo, 0),
-		sequentialUnitsRBTree: redblacktree.NewWith(spareBlocksComparator),
-	}
-	sg.openedFiles = make(map[string]*OpenedFile)
-	sg.cachedOpenedFiles = make(map[string]*OpenedFile)
-	return sg
-}
-
-func NewStorage(folder string, blockSize uint32, allocUnitSize uint32) (*Storage, error) {
-	sg := &Storage{}
-	sg.folder = folder
-	file, err := os.OpenFile(folder+entryFileRelativePath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0666)
-	if err == os.ErrExist {
-		ok := sg.loadEntries(file)
-		if !ok {
-			return nil, errors.New("entry data corrupted")
-		}
-	} else {
-		// create an empty storage
-
-	}
-
-	return sg, nil
 }
