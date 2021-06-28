@@ -1,15 +1,14 @@
-package kvdb
+package kvstore
 
 import (
 	"context"
 	"errors"
+	"github.com/sdh21/dstore/cert"
 	"github.com/sdh21/dstore/paxos"
 	"github.com/sdh21/dstore/storage"
 	"github.com/sdh21/dstore/utils"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/status"
 	"log"
 	"net"
 	"sync"
@@ -34,7 +33,7 @@ func (dsk *DiskStorage) Write(key string, size int64, value []byte) error {
 	_, found := dsk.key2block[key]
 	if found {
 		dsk.mapLock.Unlock()
-		return errors.New("kvdb Write, key already exists")
+		return errors.New("kvstore Write, key already exists")
 	}
 	dsk.key2block[key] = blocks
 	dsk.mapLock.Unlock()
@@ -77,7 +76,17 @@ type KeyValueDB struct {
 
 	checkpoint *checkpointInst
 
-	UnimplementedKeyValueDBServer
+	// Indicates whether or not to discard results of processed transactions.
+	// Saving results is somewhat inefficient and consumes lots of memory, so
+	// if you are not debugging, set it to true and use version control instead.
+	// With this set to false, you can find the result back if the reply packet is missing.
+	// If you choose to do so, you need to provide a unique client id,
+	// and make sure each request's transaction id is monotonically increasing.
+	discardResults bool
+
+	uniqueIdPart int64
+
+	UnimplementedKVStoreRPCServer
 }
 
 type DBConfig struct {
@@ -85,7 +94,7 @@ type DBConfig struct {
 	PaxosFolder      string
 	StorageBlockSize uint32
 	AllocationUnit   uint32
-	PaxosConfig      *paxos.ServerConfig
+	PaxosConfig      *paxos.Config
 	// db address is different from paxos address
 	// in order to allow different tls settings
 	DBAddress string
@@ -93,17 +102,19 @@ type DBConfig struct {
 	Addresses []string
 	Listener  net.Listener
 
-	TLS *utils.MutualTLSConfig
+	TLS *cert.MutualTLSConfig
 
 	Checkpoint CheckpointConfig
+
+	SaveProcessedResults bool
 }
 
 func DefaultConfig() *DBConfig {
 	config := &DBConfig{}
 	config.StorageBlockSize = 64 * 1024 * 1024
 	config.AllocationUnit = 4 * 1024
-	config.TLS = utils.TestTlsConfig()
-	config.PaxosConfig = &paxos.ServerConfig{
+	config.TLS = cert.TestTlsConfig()
+	config.PaxosConfig = &paxos.Config{
 		Peers:                        nil,
 		Me:                           0,
 		Storage:                      nil,
@@ -115,8 +126,12 @@ func DefaultConfig() *DBConfig {
 		DecideChannel:                make(chan paxos.DecideEvent, 100),
 		Listener:                     nil,
 		AdditionalTimeoutPer100Holes: 100 * time.Millisecond,
-		TLS:                          utils.TestTlsConfig(),
+		TLS:                          cert.TestTlsConfig(),
 	}
+	config.Checkpoint.FullCheckpointAfterNSeconds = 120
+	config.Checkpoint.IncrementalCheckpointEveryNLog = 10000
+	config.Checkpoint.FullCheckpointEveryNLog = 1000000
+	config.SaveProcessedResults = true
 	return config
 }
 
@@ -135,7 +150,7 @@ func NewServer(config *DBConfig) (*KeyValueDB, error) {
 		return nil, err
 	}
 
-	serverTLSConfig, _, err := utils.LoadMutualTLSConfig(config.TLS)
+	serverTLSConfig, _, err := cert.LoadMutualTLSConfig(config.TLS)
 	if err != nil {
 		return nil, err
 	}
@@ -148,19 +163,19 @@ func NewServer(config *DBConfig) (*KeyValueDB, error) {
 	db.address = config.DBAddress
 	db.addresses = config.Addresses
 	db.requestsBlockList = map[int64]*waitProposal{}
+	db.discardResults = !config.SaveProcessedResults
 	db.l = config.Listener
 	return db, nil
 }
 
 func (db *KeyValueDB) BatchSubmit(ctx context.Context, args *BatchSubmitArgs) (*BatchSubmitReply, error) {
 	reply := &BatchSubmitReply{}
-	opWrapper := args.Wrapper
-	if int64(len(opWrapper.Transactions)) != opWrapper.Count {
-		reply.OK = false
-		return nil, status.Error(codes.InvalidArgument, "invalid requests, count not consistent")
+
+	if len(args.Transactions) == 0 {
+		return nil, errors.New("empty transaction")
 	}
 
-	utils.Info("KeyValueDB %v is proposing %v", db.address, opWrapper)
+	args.BatchSubmitId = int64(db.px.GetMe()) | atomic.AddInt64(&db.uniqueIdPart, 1)<<10
 
 	// Indicate that someone is waiting and we should not
 	// discard apply results.
@@ -169,14 +184,13 @@ func (db *KeyValueDB) BatchSubmit(ctx context.Context, args *BatchSubmitArgs) (*
 		atomic.AddInt64(&db.waitingCount, -1)
 	}()
 
-	proposeValueResult := db.px.ProposeValue(opWrapper, func(i interface{}, i2 interface{}) bool {
+	proposeValueResult := db.px.ProposeValue(args, func(i interface{}, i2 interface{}) bool {
 		if i == nil || i2 == nil {
 			return false
 		}
-		return i.(*OpWrapper).WrapperId == i2.(*OpWrapper).WrapperId &&
-			i.(*OpWrapper).ForwarderId == i2.(*OpWrapper).ForwarderId
+		return i.(*BatchSubmitArgs).BatchSubmitId == i2.(*BatchSubmitArgs).BatchSubmitId
 	})
-	opWrapper = nil
+
 	if !proposeValueResult.Succeeded {
 		// redirect requests to leader
 		reply.OK = false
@@ -202,8 +216,8 @@ func (db *KeyValueDB) BatchSubmit(ctx context.Context, args *BatchSubmitArgs) (*
 		applyResult, found := db.requestsBlockList[proposalId]
 		if found {
 			// already there
-			reply.Result = applyResult.result
-			if reply.Result == nil {
+			reply.TransactionResults = applyResult.result.TransactionResults
+			if reply.TransactionResults == nil {
 				log.Fatalf("nil result!!")
 			}
 			delete(db.requestsBlockList, proposalId)
@@ -219,10 +233,10 @@ func (db *KeyValueDB) BatchSubmit(ctx context.Context, args *BatchSubmitArgs) (*
 			if w.result == nil {
 				log.Fatalf("nil result!!!!!!!!!")
 			}
-			reply.Result = w.result
+			reply.TransactionResults = w.result.TransactionResults
 		}
 		close(w.waitChan)
-		if reply.Result == nil {
+		if reply.TransactionResults == nil {
 			log.Fatalf("nil result!!")
 		}
 		reply.OK = true
@@ -232,7 +246,7 @@ func (db *KeyValueDB) BatchSubmit(ctx context.Context, args *BatchSubmitArgs) (*
 
 type waitProposal struct {
 	proposalId int64
-	result     *WrapperResult
+	result     *BatchSubmitReply
 	waitChan   chan bool
 }
 
@@ -243,15 +257,24 @@ func (db *KeyValueDB) waitDecide() {
 			if !ok {
 				break
 			}
+			// we do not have shards and TSO service;
+			// use InstanceId to provide TxnTS
+			txns := event.DecidedValue.(*BatchSubmitArgs).Transactions
+			if len(txns) >= 64 {
+				panic("too many transactions")
+			}
+			for ti := range txns {
+				if txns[ti].TxnTimestamp == -1 {
+					txns[ti].TxnTimestamp = event.InstanceId<<6 | int64(ti)
+				}
+			}
 			db.checkpoint.eventChannel <- event
 			atomic.StoreInt64(&db.lastProposalId, event.InstanceId)
 			if event.DecidedValue == nil {
 				continue
 			}
-			// apply OpWrapper one by one, but different transactions in
-			// an OpWrapper can apply concurrently.
 			db.requestsBlockListLock.Lock()
-			applyResult := db.applyOpWrapper(db.state, event.DecidedValue.(*OpWrapper), event.InstanceId)
+			applyResult := db.applyTransactions(db.state, event.DecidedValue.(*BatchSubmitArgs), event.InstanceId)
 			if atomic.LoadInt64(&db.waitingCount) <= 0 {
 				// just discard the applyResult.
 				// also, we can reset requestsBlockList
@@ -291,7 +314,7 @@ func (db *KeyValueDB) Close() {
 func (db *KeyValueDB) StartServer() {
 	db.px.StartServer()
 
-	RegisterKeyValueDBServer(db.server, db)
+	RegisterKVStoreRPCServer(db.server, db)
 
 	if db.l == nil {
 		l, err := net.Listen("tcp", db.address)

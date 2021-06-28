@@ -3,6 +3,7 @@ package StorageServer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/sdh21/dstore/storage"
 	"hash"
@@ -21,7 +22,10 @@ func (ss *StorageServer) RegisterUserRead(ctx context.Context, args *RegUserRead
 	user.mu.Lock()
 	defer user.mu.Unlock()
 
-	user.tokensRead[args.FileToken] = args.FileKey
+	for i, token := range args.FileToken {
+		user.tokensRead[token] = args.FileKey[i]
+	}
+
 	// TODO: add expiration and renewal
 
 	reply := &RegUserReadReply{OK: true}
@@ -195,10 +199,12 @@ func (fc *FileContentHandler) Read(p []byte) (int, error) {
 		offsetInner := fc.currentOffset % BlockSize
 		_, err := fc.checkBlock(currentBlock)
 		if err != nil {
+			fmt.Printf("this error may be silent: %v\n", err)
 			return 0, err
 		}
 		bytesRead, err := fc.readInBlock(currentBlock, offsetInner, p[pOffset:])
 		if err != nil {
+			fmt.Printf("this error may be silent %v\n", err)
 			return 0, err
 		}
 		fc.currentOffset += bytesRead

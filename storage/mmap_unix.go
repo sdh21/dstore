@@ -86,7 +86,6 @@ func (r *FileMMap) Close() error {
 	return unix.Munmap(data)
 }
 
-// Close closes the reader.
 func (r *FileMMap) Sync(from int64, to int64) error {
 	//a1, a2 := r.alignToPageSize(from, to)
 	//err := unix.Msync(r.Data[a1:a2], unix.MS_SYNC)

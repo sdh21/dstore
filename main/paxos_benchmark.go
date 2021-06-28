@@ -4,9 +4,9 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"github.com/sdh21/dstore/cert"
 	"github.com/sdh21/dstore/paxos"
 	"github.com/sdh21/dstore/storage"
-	"github.com/sdh21/dstore/utils"
 	"log"
 	"math/rand"
 	"net"
@@ -64,7 +64,7 @@ func paxosPerf(cfg *perfConfig) {
 		key2block:    map[string][]*storage.FileBlockInfo{},
 		folder:       fo,
 	}
-	config := &paxos.ServerConfig{
+	config := &paxos.Config{
 		Peers:                        nil,
 		Me:                           int(cfg.paxosId),
 		Storage:                      dsk,
@@ -97,7 +97,7 @@ func paxosPerf(cfg *perfConfig) {
 	}
 	config.Listener = l
 	config.Peers = paxosPeers
-	px, err := paxos.NewPaxos(config, utils.TestTlsConfig())
+	px, err := paxos.NewPaxos(config, cert.TestTlsConfig())
 	if err != nil {
 		panic(err)
 	}

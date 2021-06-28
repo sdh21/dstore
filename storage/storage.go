@@ -181,7 +181,7 @@ func (sg *Storage) GetBlockContent(block *FileBlockInfo, offset int64, buf []byt
 	if bytesToRead > contentSize {
 		bytesToRead = contentSize
 	}
-	if beginPos+bytesToRead >= file.memoryMap.Size {
+	if beginPos+bytesToRead > file.memoryMap.Size {
 		return 0, errors.New("exceeds memory map size")
 	}
 

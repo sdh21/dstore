@@ -29,7 +29,7 @@ type ReconstructionResult struct {
 //  Should be called before StartServer
 //  Warning: caller must pass a new storage(a new folder) to NewPaxos, different from where logFiles lie in, and
 //  ReconstructPaxos cannot check this.
-//  Recovered logs will be written to the ServerConfig.Storage by calling the Write method.
+//  Recovered logs will be written to the Config.Storage by calling the Write method.
 
 func (px *Paxos) ReconstructPaxos(logFiles []string) (*ReconstructionResult, error) {
 

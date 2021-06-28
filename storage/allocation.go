@@ -457,6 +457,7 @@ func (sg *Storage) allocateBlock(path string) error {
 	}
 	err = syscall.Fallocate(int(file.Fd()), 0, 0, int64(sg.blockSize))
 	if err != nil {
+		log.Println("fallocate fails.")
 		return err
 	}
 	err = file.Close()

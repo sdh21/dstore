@@ -16,25 +16,27 @@ import (
 // UploadFileInit should be called by forwarder through GRPC
 // we only trust init requests sent by forwarder
 func (ss *StorageServer) UploadFileInit(ctx context.Context, args *UploadInitArgs) (*UploadInitReply, error) {
-	fmd, err := ss.sg.CreateLargeFileAlloc(args.FileKey, args.FileSize)
-	if err != nil {
-		return &UploadInitReply{OK: false, Message: "Alloc failed."}, nil
-	}
-
 	user := ss.GetOrCreateUser(args.UserToken)
 
-	user.mu.Lock()
-	user.tokensWrite[args.FileToken] = args.FileKey
-	user.mu.Unlock()
+	for i, _ := range args.FileKey {
+		user.mu.Lock()
+		user.tokensWrite[args.FileToken[i]] = args.FileKey[i]
+		user.mu.Unlock()
 
-	ss.writeHandlersLock.Lock()
-	_, found := ss.writeHandlers[args.FileKey]
-	if found {
+		fmd, err := ss.sg.CreateLargeFileAlloc(args.FileKey[i], args.FileSize[i])
+		if err != nil {
+			return &UploadInitReply{OK: false, Message: "Alloc failed."}, nil
+		}
+
+		ss.writeHandlersLock.Lock()
+		_, found := ss.writeHandlers[args.FileKey[i]]
+		if found {
+			ss.writeHandlersLock.Unlock()
+			return &UploadInitReply{OK: false, Message: "Duplicate key."}, nil
+		}
+		ss.writeHandlers[args.FileKey[i]] = NewFileUploadHandler(fmd, ss.sg)
 		ss.writeHandlersLock.Unlock()
-		return &UploadInitReply{OK: false, Message: "Duplicate key."}, nil
 	}
-	ss.writeHandlers[args.FileKey] = NewFileUploadHandler(fmd, ss.sg)
-	ss.writeHandlersLock.Unlock()
 
 	reply := &UploadInitReply{OK: true}
 	return reply, nil

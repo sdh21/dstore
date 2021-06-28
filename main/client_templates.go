@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"github.com/sdh21/dstore/kvdb"
-	"github.com/sdh21/dstore/utils"
+	"github.com/sdh21/dstore/cert"
+	"github.com/sdh21/dstore/kvstore"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -50,34 +50,34 @@ func clientTemplate1(cfg *perfConfig) {
 	// create concurrent sub-clients
 	for subclienti := 0; subclienti < int(cfg.concurrentclient); subclienti++ {
 		subclientId := (subclienti+1)<<16 | int(cfg.clientId)
-		client := kvdb.NewClient(servers, int64(subclientId), utils.TestTlsConfig())
+		client := kvstore.NewClient(servers, int64(subclientId), cert.TestTlsConfig())
 		go func() {
 			requestId := int64(1)
 			for {
 				requestId++
-				op := client.CreateBundledOp(&kvdb.Transaction{
+				op := client.CreateBundledOp(&kvstore.Transaction{
 					ClientId:      "template1" + strconv.Itoa(int(subclientId)),
 					TransactionId: requestId,
-					TableId:       "template1" + strconv.Itoa(int(subclientId)),
-					Ops: []*kvdb.AnyOp{
-						kvdb.OpMapStore([]string{}, "1", "1").
-							OpSetTableOption(kvdb.CreateTableOption_UseTransactionTableId, false),
-						kvdb.OpMapStore([]string{}, "12", "1234323"),
+					CollectionId:  "template1" + strconv.Itoa(int(subclientId)),
+					Ops: []*kvstore.AnyOp{
+						kvstore.OpMapStore([]string{}, "1", "1").
+							OpSetTableOption(kvstore.CreateTableOption_UseTransactionTableId, false),
+						kvstore.OpMapStore([]string{}, "12", "1234323"),
 						// we create a new map with key 23456 in the root map here
 						// note: it will replace the old value.
-						kvdb.OpMapStore([]string{}, "23456", map[string]*kvdb.AnyValue{}),
+						kvstore.OpMapStore([]string{}, "23456", map[string]*kvstore.AnyValue{}),
 						// we then visit the nested map
 						// by creating a new list in it.
 						// note: it will replace the old value.
-						kvdb.OpMapStore([]string{"23456"}, "nested-list", []*kvdb.AnyValue{}),
+						kvstore.OpMapStore([]string{"23456"}, "nested-list", []*kvstore.AnyValue{}),
 						// append to this list
-						kvdb.OpAppend([]string{"23456", "nested-list"}, "1111111111"),
-						kvdb.OpAppend([]string{"23456", "nested-list"}, "1111111111"),
-						kvdb.OpAppend([]string{"23456", "nested-list"}, value),
+						kvstore.OpAppend([]string{"23456", "nested-list"}, "1111111111"),
+						kvstore.OpAppend([]string{"23456", "nested-list"}, "1111111111"),
+						kvstore.OpAppend([]string{"23456", "nested-list"}, value),
 					},
 					TableVersionExpected: -1,
 				})
-				reply := client.Submit(&kvdb.BatchSubmitArgs{
+				reply := client.Submit(&kvstore.BatchSubmitArgs{
 					Wrapper: op,
 				})
 				if !reply.OK {
@@ -86,7 +86,7 @@ func clientTemplate1(cfg *perfConfig) {
 				} else if len(reply.Result.TransactionResults) != 1 {
 					fmt.Printf("len wrong\n")
 				} else if reply.Result.TransactionResults[0].Status !=
-					kvdb.TransactionResult_OK {
+					kvstore.TransactionResult_OK {
 					fmt.Printf("err: reply: %v\n", reply)
 				} else {
 					mu.Lock()
@@ -118,7 +118,7 @@ func clientTemplate2(cfg *perfConfig) {
 	if cfg.concurrentqs == -1 {
 		panic("incorrect q")
 	}
-	client := kvdb.NewDBAccessLayer(uint64(cfg.concurrentqs), servers, cfg.clientId, utils.TestTlsConfig())
+	client := kvstore.NewDBAccessLayer(uint64(cfg.concurrentqs), servers, cfg.clientId, cert.TestTlsConfig())
 	fmt.Printf("Client started with template 2.\n")
 	fmt.Printf("Client ID: %v\n", "client"+strconv.Itoa(int(cfg.clientId)))
 	fmt.Printf("Key Size: %v KB\n", cfg.valuesize/1024)
@@ -151,25 +151,25 @@ func clientTemplate2(cfg *perfConfig) {
 			for {
 				requestId++
 				// db access layer
-				reply := client.Submit(&kvdb.Transaction{
+				reply := client.Submit(&kvstore.Transaction{
 					ClientId:      "subclient" + strconv.Itoa(subclientId),
 					TransactionId: requestId,
-					TableId:       "subclient" + strconv.Itoa(subclientId),
-					Ops: []*kvdb.AnyOp{
-						kvdb.OpMapStore([]string{}, "1", "1").
-							OpSetTableOption(kvdb.CreateTableOption_UseTransactionTableId, false),
-						kvdb.OpMapStore([]string{}, "12", "1234323"),
+					CollectionId:  "subclient" + strconv.Itoa(subclientId),
+					Ops: []*kvstore.AnyOp{
+						kvstore.OpMapStore([]string{}, "1", "1").
+							OpSetTableOption(kvstore.CreateTableOption_UseTransactionTableId, false),
+						kvstore.OpMapStore([]string{}, "12", "1234323"),
 						// we create a new map with key 23456 in the root map here
 						// note: it will replace the old value.
-						kvdb.OpMapStore([]string{}, "23456", map[string]*kvdb.AnyValue{}),
+						kvstore.OpMapStore([]string{}, "23456", map[string]*kvstore.AnyValue{}),
 						// we then visit the nested map
 						// by creating a new list in it.
 						// note: it will replace the old value.
-						kvdb.OpMapStore([]string{"23456"}, "nested-list", []*kvdb.AnyValue{}),
+						kvstore.OpMapStore([]string{"23456"}, "nested-list", []*kvstore.AnyValue{}),
 						// append to this list
-						kvdb.OpAppend([]string{"23456", "nested-list"}, "1111111111"),
-						kvdb.OpAppend([]string{"23456", "nested-list"}, "1111111111"),
-						kvdb.OpAppend([]string{"23456", "nested-list"}, value),
+						kvstore.OpAppend([]string{"23456", "nested-list"}, "1111111111"),
+						kvstore.OpAppend([]string{"23456", "nested-list"}, "1111111111"),
+						kvstore.OpAppend([]string{"23456", "nested-list"}, value),
 					},
 					TableVersionExpected: -1,
 				})
@@ -177,7 +177,7 @@ func clientTemplate2(cfg *perfConfig) {
 				if reply == nil {
 					fmt.Printf("db access layer fails\n")
 					time.Sleep(1 * time.Second)
-				} else if reply.Status != kvdb.TransactionResult_OK {
+				} else if reply.Status != kvstore.TransactionResult_OK {
 					fmt.Printf("err: reply: %v\n", reply)
 				} else {
 					mu.Lock()

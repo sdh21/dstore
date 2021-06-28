@@ -1,4 +1,4 @@
-package kvdb
+package kvstore
 
 import (
 	"github.com/sdh21/dstore/paxos"
@@ -12,7 +12,7 @@ func initializePaxos(config *DBConfig) (*paxos.Paxos, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = os.Mkdir(folder+"/logs", os.FileMode(0777))
+	err = os.MkdirAll(folder+"/logs", os.FileMode(0777))
 	if err != nil {
 		return nil, err
 	}

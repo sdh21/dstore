@@ -6,7 +6,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"github.com/gin-gonic/gin"
-	"github.com/sdh21/dstore/utils"
+	"github.com/sdh21/dstore/cert"
 	"io/ioutil"
 	"log"
 	"math/rand"
@@ -20,11 +20,17 @@ import (
 )
 
 func createTestEnv(t *testing.T) *StorageServer {
+	testTlsCfg := &cert.MutualTLSConfig{
+		ServerCertFile: "../../cert/test_cert/server.crt",
+		ServerPKFile:   "../../cert/test_cert/server.key",
+		ClientCertFile: "../../cert/test_cert/client.crt",
+		ClientPKFile:   "../../cert/test_cert/client.key",
+	}
 	err := os.RemoveAll("/tmp/store-test/storage_server/1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := NewStorageServer("/tmp/store-test/storage_server/1", utils.TestTlsConfig())
+	server, err := NewStorageServer("/tmp/store-test/storage_server/1", testTlsCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,41 +40,50 @@ func createTestEnv(t *testing.T) *StorageServer {
 func testReadFile(t *testing.T, server *StorageServer, userToken string, fileToken string, key string, from int64, to int64, content []byte) {
 	read, err := server.RegisterUserRead(context.Background(), &RegUserReadArgs{
 		UserToken: userToken,
-		FileToken: fileToken,
-		FileKey:   key,
+		FileToken: []string{fileToken},
+		FileKey:   []string{key},
 	})
 	if err != nil {
 		t.Fatal(read)
 	}
 
 	w := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(w)
 
 	var tmpWriter bytes.Buffer
-	request := multipart.NewWriter(&tmpWriter)
-	_ = request.WriteField("user-token", userToken)
-	_ = request.WriteField("file-token", fileToken)
-	_ = request.WriteField("offset", "0")
-	_ = request.WriteField("file-name", "file name w1")
-	err = request.Close()
+	multipartReq := multipart.NewWriter(&tmpWriter)
+	_ = multipartReq.WriteField("user-token", userToken)
+	_ = multipartReq.WriteField("file-token", fileToken)
+	_ = multipartReq.WriteField("offset", "0")
+	_ = multipartReq.WriteField("file-name", "file name w1")
+	err = multipartReq.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ctx.Request = httptest.NewRequest("POST", "/", &tmpWriter)
-	ctx.Request.Header.Set("Content-Type", request.FormDataContentType())
-	ctx.Request.Header.Set("Range", "bytes="+strconv.FormatInt(from, 10)+
+	request := httptest.NewRequest("POST", "/", &tmpWriter)
+	request.Header.Set("Content-Type", multipartReq.FormDataContentType())
+	request.Header.Set("Range", "bytes="+strconv.FormatInt(from, 10)+
 		"-"+strconv.FormatInt(to-1, 10))
 
 	getFile := server.GetFile()
 
+	ctx, _ := gin.CreateTestContext(w)
+	ctx.Request = request
+
 	getFile(ctx)
+
+	response := w.Result()
 
 	if w.Code != http.StatusPartialContent {
 		t.Fatal(w)
 	}
 
-	partial := w.Result().Body
+	if response.Header.Get("Content-Range") != "bytes "+strconv.FormatInt(from, 10)+
+		"-"+strconv.FormatInt(to-1, 10)+"/"+strconv.FormatInt(int64(len(content)), 10) {
+		t.Fatal(w)
+	}
+
+	partial := response.Body
 	bd, err := ioutil.ReadAll(partial)
 	if err != nil {
 		t.Fatal(err)
@@ -81,10 +96,10 @@ func testReadFile(t *testing.T, server *StorageServer, userToken string, fileTok
 
 func testUploadFile(t *testing.T, key string, server *StorageServer, content []byte, userToken string, fileToken string) {
 	reply, err := server.UploadFileInit(context.Background(), &UploadInitArgs{
-		FileKey:   key + "-uploading",
-		FileSize:  int64(len(content)),
+		FileKey:   []string{key + "-uploading"},
+		FileSize:  []int64{int64(len(content))},
 		UserToken: userToken,
-		FileToken: fileToken,
+		FileToken: []string{fileToken},
 	})
 	if err != nil {
 		t.Fatal(err)

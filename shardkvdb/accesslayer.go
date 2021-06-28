@@ -1,7 +1,7 @@
-package kvdb
+package shardkvdb
 
 import (
-	"github.com/sdh21/dstore/utils"
+	"github.com/sdh21/dstore/cert"
 	"sync"
 	"sync/atomic"
 )
@@ -21,11 +21,10 @@ type DBAccessLayer struct {
 	qPureReadRotate int64
 }
 
-// ConcurrentQs should be set to indicate how many requests
+// NewDBAccessLayer creates a new db client instance with batch supported.
+// ConcurrentQs indicates how many requests
 // are concurrently sent to db.
-// A forwarder can only use one DBAccessLayer to avoid
-// request/wrapper id collision.
-func NewDBAccessLayer(concurrentQs uint64, servers []string, forwarderId int64, tlsConfig *utils.MutualTLSConfig) *DBAccessLayer {
+func NewDBAccessLayer(concurrentQs uint64, servers []string, clientId int64, tlsConfig *cert.MutualTLSConfig) *DBAccessLayer {
 	q := make([]*ConcurrentChannel, concurrentQs)
 	for i, _ := range q {
 		q[i] = &ConcurrentChannel{}
@@ -33,7 +32,7 @@ func NewDBAccessLayer(concurrentQs uint64, servers []string, forwarderId int64, 
 	}
 	return &DBAccessLayer{
 		ConcurrentQs: concurrentQs,
-		client:       NewClient(servers, forwarderId, tlsConfig),
+		client:       NewClient(servers, clientId, tlsConfig),
 		q:            q,
 		qRotate:      0,
 	}
@@ -57,6 +56,8 @@ func NewBundledRequests() *BundledRequests {
 	}
 }
 
+// Submit a transaction. ClientId and TransactionId can be left empty if
+// the db servers' SaveProcessedResults option is not enabled.
 func (db *DBAccessLayer) Submit(t *Transaction) *TransactionResult {
 	q := db.q[atomic.AddUint64(&db.qRotate, 1)%db.ConcurrentQs]
 	q.mu.Lock()
@@ -72,7 +73,7 @@ func (db *DBAccessLayer) Submit(t *Transaction) *TransactionResult {
 		q.reqWaiting = NewBundledRequests()
 		q.busy = true
 		q.mu.Unlock()
-		reply := db.client.Submit(&BatchSubmitArgs{Wrapper: db.client.CreateBundledOp(reqSent.queuedTs...)})
+		reply := db.client.Submit(&BatchSubmitArgs{Transactions: db.client.CreateBundledOp(reqSent.queuedTs...)})
 		if reply.OK {
 			for i, ch := range reqSent.tChannels {
 				ch <- reply.Result.TransactionResults[i]

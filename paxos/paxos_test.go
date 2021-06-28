@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"github.com/sdh21/dstore/utils"
+	"github.com/sdh21/dstore/cert"
 	"log"
 	"math"
 	"math/rand"
@@ -81,7 +81,7 @@ func createPaxosNoStorage(count int, tag string, t *testing.T) ([]*Peer, []*Paxo
 	pxs := make([]*Paxos, count)
 	for i := 0; i < count; i++ {
 		var err error
-		cfg := &ServerConfig{
+		cfg := &Config{
 			Peers:                    peers,
 			Me:                       i,
 			Storage:                  &FakeStorage{},
@@ -90,7 +90,7 @@ func createPaxosNoStorage(count int, tag string, t *testing.T) ([]*Peer, []*Paxo
 			HeartbeatInterval:        1000,
 			LeaderTimeout:            10000,
 			LeaderTimeoutRTTs:        10,
-			TLS:                      utils.TestTlsConfig(),
+			TLS:                      cert.TestTlsConfig(),
 			MaxDoneInstancesInMemory: 50000,
 		}
 		pxs[i], err = NewPaxos(cfg)

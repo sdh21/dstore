@@ -3,6 +3,7 @@ package StorageServer
 import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/sdh21/dstore/cert"
 	"github.com/sdh21/dstore/storage"
 	"github.com/sdh21/dstore/utils"
 	"google.golang.org/grpc"
@@ -45,7 +46,7 @@ type UserData struct {
 const BlockSize = 64 * 1024 * 1024
 const AllocUnitSize = 4 * 1024
 
-func NewStorageServer(folder string, tlsConfig *utils.MutualTLSConfig) (*StorageServer, error) {
+func NewStorageServer(folder string, tlsConfig *cert.MutualTLSConfig) (*StorageServer, error) {
 	sg, err := storage.NewStorage(folder, BlockSize, AllocUnitSize)
 	if err != nil {
 		return nil, err
@@ -56,7 +57,7 @@ func NewStorageServer(folder string, tlsConfig *utils.MutualTLSConfig) (*Storage
 	ss.readHandlers = map[string]*FileContentHandler{}
 	ss.writeHandlers = map[string]*FileUploadHandler{}
 
-	serverTLSConfig, _, err := utils.LoadMutualTLSConfig(tlsConfig)
+	serverTLSConfig, _, err := cert.LoadMutualTLSConfig(tlsConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +68,7 @@ func NewStorageServer(folder string, tlsConfig *utils.MutualTLSConfig) (*Storage
 	ss.router = gin.Default()
 	ss.router.MaxMultipartMemory = 16 << 20 // 16MB
 	ss.router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*", "192.168.50.17"},
+		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "PUT"},
 		AllowHeaders:     []string{"Origin"},
 		AllowCredentials: true,
@@ -75,6 +76,9 @@ func NewStorageServer(folder string, tlsConfig *utils.MutualTLSConfig) (*Storage
 		MaxAge:           12 * time.Hour,
 	}))
 	ss.router.Use(gin.Logger())
+
+	ss.router.POST("/write", ss.UploadFileContent())
+	ss.router.GET("/read", ss.GetFile())
 
 	return ss, nil
 }

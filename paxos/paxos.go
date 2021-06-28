@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/gob"
 	"errors"
+	"github.com/sdh21/dstore/cert"
 	"github.com/sdh21/dstore/utils"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -20,6 +21,13 @@ import (
 )
 
 var grpcConcurrentStreams = 20000
+
+type Event int64
+
+const (
+	EventNewlyElectedLeader Event = iota
+	EventLeadershipLost
+)
 
 type Instance struct {
 	HighestAcN int64  // Na: highest accepted proposal
@@ -152,6 +160,8 @@ type Paxos struct {
 
 	// Can we accept?
 	acceptorMode bool
+
+	eventNotifyCallback func(Event, int64)
 }
 
 const ServerIdBits int = 4
@@ -520,6 +530,7 @@ func (px *Paxos) proposePhase1(instanceIdFrom int64, learnToInf bool, value []by
 	px.leaderInfoLock.Lock()
 	if n > px.leaderNp {
 		px.leaderNp = n
+		go px.eventNotifyCallback(EventNewlyElectedLeader, n)
 		if px.skipPrepareFrom > maximumNoMoreAcceptedAfter+1 {
 			// This can happen, because we only learn from majority!
 			// However, as long as it is not decided, we are safe.
@@ -820,6 +831,7 @@ func (px *Paxos) propose(instanceIdFrom int64, value interface{}, learnToInf boo
 		// because the election might fail with leaderNp set.
 		px.leaderInfoLock.Lock()
 		px.leaderNp = -1
+		go px.eventNotifyCallback(EventLeadershipLost, -1)
 		px.leaderInfoLock.Unlock()
 
 		if !phase1.phase1Skipped {
@@ -1399,7 +1411,7 @@ func (px *Paxos) StartServer() {
 	px.startHeartBeat()
 }
 
-type ServerConfig struct {
+type Config struct {
 	Peers             []*Peer
 	Me                int
 	Storage           PersistentStorage
@@ -1412,11 +1424,13 @@ type ServerConfig struct {
 	// tests might need this
 	Listener                     net.Listener
 	AdditionalTimeoutPer100Holes time.Duration
-	TLS                          *utils.MutualTLSConfig
+	TLS                          *cert.MutualTLSConfig
 	MaxDoneInstancesInMemory     int
+
+	EventNotifyCallback func(Event, int64)
 }
 
-func NewPaxos(config *ServerConfig) (*Paxos, error) {
+func NewPaxos(config *Config) (*Paxos, error) {
 	gob.Register(&ValueWrapper{})
 	rand.Seed(time.Now().UTC().UnixNano())
 
@@ -1447,7 +1461,12 @@ func NewPaxos(config *ServerConfig) (*Paxos, error) {
 		},
 		instancesToStorageKey: NewArrayQueue(1),
 		maxInstancesInMemory:  int64(config.MaxDoneInstancesInMemory),
+		eventNotifyCallback:   func(event Event, i int64) {},
 	}
+	if config.EventNotifyCallback != nil {
+		px.eventNotifyCallback = config.EventNotifyCallback
+	}
+
 	if config.MaxDoneInstancesInMemory == 0 {
 		return nil, errors.New("MaxDoneInstancesInMemory should be larger than 0")
 	}
@@ -1469,7 +1488,7 @@ func NewPaxos(config *ServerConfig) (*Paxos, error) {
 
 	px.storage = config.Storage
 
-	serverTLSConfig, clientTLSConfig, err := utils.LoadMutualTLSConfig(config.TLS)
+	serverTLSConfig, clientTLSConfig, err := cert.LoadMutualTLSConfig(config.TLS)
 
 	if err != nil {
 		return nil, err

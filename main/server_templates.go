@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/sdh21/dstore/kvdb"
+	"github.com/sdh21/dstore/cert"
+	"github.com/sdh21/dstore/kvstore"
 	"github.com/sdh21/dstore/paxos"
-	"github.com/sdh21/dstore/utils"
 	"log"
 	"net"
 	"net/http"
@@ -24,7 +24,7 @@ func serverTemplate1(cfg *perfConfig) {
 	os.MkdirAll(fo+"/checkpoint/data-blocks", 0777)
 	os.MkdirAll(fo+"/checkpoint/file-metadata-blocks", 0777)
 
-	config := kvdb.DefaultConfig()
+	config := kvstore.DefaultConfig()
 	config.StorageFolder = fo
 
 	var paxosPeers []*paxos.Peer
@@ -55,7 +55,7 @@ func serverTemplate1(cfg *perfConfig) {
 	config.Listener = dbl
 	config.DBAddress = dbl.Addr().String()
 
-	db, err := kvdb.NewServer(config, utils.TestTlsConfig())
+	db, err := kvstore.NewServer(config, cert.TestTlsConfig())
 	if err != nil {
 		log.Fatal("cannot run db server, error: ", err)
 	}

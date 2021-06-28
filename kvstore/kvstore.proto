@@ -1,0 +1,154 @@
+syntax = "proto3";
+
+package kvstore;
+
+option go_package = "github.com/sdh21/dstore/kvstore";
+
+service KVStoreRPC {
+  rpc BatchSubmit(BatchSubmitArgs) returns (BatchSubmitReply);
+  rpc BatchRead(BatchReadArgs) returns (BatchReadReply);
+}
+
+message BatchReadArgs {
+  int64      Count = 1;
+  // Read-only Transactions
+  repeated   Transaction Transactions = 2;
+}
+
+message BatchReadReply {
+  bool     IsLeader = 1;
+  int64    LeaderNp = 2;
+  int64    HighestNpSeen = 3;
+  repeated TransactionResult Results = 4;
+}
+
+message BatchSubmitArgs {
+  int64     Count = 1;
+  repeated  Transaction Transactions = 2;
+  int64     BatchSubmitId = 3;
+}
+
+message BatchSubmitReply {
+  bool                        OK = 1;
+  string                      TalkTo = 2;
+  repeated TransactionResult  TransactionResults = 3;
+  bool                        InternalError = 4;
+}
+
+//  An atomic unit of operations.
+message Transaction {
+  repeated AnyOp    Ops = 1;
+  int64             TxnTimestamp = 2;
+  int64             LocalUnixTimestamp = 3;
+  string            ClientIdentifier = 4;
+}
+
+enum OpType {
+  Get        = 0;
+  Put        = 1;
+  MapStore   = 2;
+  MapDelete  = 3;
+  Check      = 4;
+  ListAppend = 5;
+  ListPop    = 6;
+  RangeQuery = 7;
+
+  // These ops do not follow transaction's atomicity & isolation.
+  // That is to say, they are applied independently and even
+  // the transaction fails, these ops can take effect.
+  CreateDocument = 16;
+  DeleteDocument = 17;
+  CreateCollection = 30;
+  DeleteCollection = 31;
+
+  // You can do string hash on a map field, value = base64(sha512(old+new)),
+  // retval = old, to check consistency and find out
+  // potential bugs.
+  DoStrHash  =  127;
+}
+
+message AnyOp {
+  OpType            Type = 1;
+
+  string            CollectionId = 2;
+  string            DocumentId = 3;
+
+  repeated string   LookupKey = 4;
+  AnyValue          Value = 5;
+  string            MapKey = 6;
+
+  string            Alias = 7;
+
+  // To ignore Version, set it to -1
+  int64             DocumentVersionExpected = 9;
+  int64             FieldVersionExpected = 10;
+  OnFailOption      OnFail = 11;
+  CreateOption      CreateOption = 12;
+}
+
+enum ValueType {
+  String = 0;
+  Number = 1;
+  List = 2;
+  HashMap = 3;
+  Alias = 4;
+  Binary = 11;
+  Undefined = 31;
+}
+
+message AnyValue {
+  ValueType              Type    = 1;
+  repeated AnyValue      List    = 2;
+  map<string, AnyValue>  Map     = 3;
+  string                 Str     = 4;
+  int64                  Num     = 5;
+
+  string                 Alias   = 10;
+  int64                  Version = 11;
+
+  bytes                  Bin     = 31;
+}
+
+message CreateOption {
+  bool  UseRandomUniqueId = 1;
+  bool  ErrIfExists = 2;
+}
+
+enum OnFailOption {
+  Rollback              = 0;
+  Abort                 = 1;
+  Continue              = 2;
+}
+
+message AliasValue {
+  bool      IsNull = 1;
+  AnyValue  Value = 2;
+}
+
+message TransactionResult {
+  int64 TransactionId = 1;
+  StatusCode Status = 2;
+  map<string, AliasValue> Values = 3;
+  string Message = 4;
+  int64 TableVersion = 5;
+  enum StatusCode {
+    OK = 0;
+    CollectionNotFound = 1;
+    DocumentNotFound = 2;
+
+    CollectionAlreadyExists = 3;
+    DocumentAlreadyExists = 4;
+
+    NotExpectedDocumentVersion = 5;
+
+    TypeAssertionFailed = 6;
+    UserAssumptionFailed = 7;
+
+    NotExpectedFieldVersion = 8;
+    RequestTooLate = 9;
+
+    Aborted = 10;
+
+    Unknown = 31;
+  }
+}

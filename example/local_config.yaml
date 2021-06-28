@@ -1,0 +1,69 @@
+#  local_config.yaml
+#  Deploy all servers on one machine, for testing.
+
+file_servers:
+  servers:
+    -
+      id: 0
+      use_https: false
+      domain: "n/a"
+      http_bind_on: "127.0.0.1:30001"
+      http_addr: "127.0.0.1:30001"
+
+storage_servers:
+  client_cert: ./cert/test_cert/client.crt
+  client_key: ./cert/test_cert/client.key
+  server_cert: ./cert/test_cert/server.crt
+  server_key: ./cert/test_cert/server.key
+
+  servers:
+    -
+      id: 0
+      name: "storage-0"
+      domain: "n/a"
+      bind_on: "0.0.0.0:31001"
+      addr: "127.0.0.1:31001"
+      http_bind_on: "0.0.0.0:32001"
+      http_addr: "127.0.0.1:32001"
+      folder: "/tmp/storage_server/0"
+
+db:
+  client_cert: ./cert/test_cert/client.crt
+  client_key: ./cert/test_cert/client.key
+  server_cert: ./cert/test_cert/server.crt
+  server_key: ./cert/test_cert/server.key
+
+  paxos:
+    client_cert: ./cert/test_cert/client.crt
+    client_key: ./cert/test_cert/client.key
+    server_cert: ./cert/test_cert/server.crt
+    server_key: ./cert/test_cert/server.key
+
+  servers:
+    -
+      id: 0
+      name: "db-0"
+      paxos_addr:       "127.0.0.1:40001"
+      paxos_bind_on:    "0.0.0.0:40001"
+      db_addr:          "127.0.0.1:41001"
+      db_bind_on:       "0.0.0.0:41001"
+      paxos_folder:     "/tmp/dstore/db-0/paxos"
+      db_folder:        "/tmp/dstore/db-0/db"
+    -
+      id: 1
+      name: "db-1"
+      paxos_addr:       "127.0.0.1:40002"
+      paxos_bind_on:    "0.0.0.0:40002"
+      db_addr:          "127.0.0.1:41002"
+      db_bind_on:       "0.0.0.0:41002"
+      paxos_folder:     "/tmp/dstore/db-1/paxos"
+      db_folder:        "/tmp/dstore/db-1/db"
+    -
+      id: 2
+      name: "db-2"
+      paxos_addr:       "127.0.0.1:40003"
+      paxos_bind_on:    "0.0.0.0:40003"
+      db_addr:          "127.0.0.1:41003"
+      db_bind_on:       "0.0.0.0:41003"
+      paxos_folder:     "/tmp/dstore/db-2/paxos"
+      db_folder:        "/tmp/dstore/db-2/db"

@@ -12,8 +12,8 @@ service FileService {
 
 message RegUserReadArgs {
   string    UserToken = 1;
-  string    FileToken = 2;
-  string    FileKey   = 3;
+  repeated string    FileToken = 2;
+  repeated string    FileKey   = 3;
 }
 
 message RegUserReadReply {
@@ -23,10 +23,10 @@ message RegUserReadReply {
 }
 
 message UploadInitArgs {
-  string    FileKey   = 1;
-  int64     FileSize  = 2;
-  string    UserToken = 3;
-  string    FileToken = 4;
+  string    UserToken = 1;
+  repeated string    FileKey   = 2;
+  repeated int64     FileSize  = 3;
+  repeated string    FileToken = 4;
 }
 
 message UploadInitReply {

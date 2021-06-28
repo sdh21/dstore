@@ -1,4 +1,4 @@
-package kvdb
+package kvstore
 
 import (
 	"bytes"
@@ -30,10 +30,14 @@ type checkpointInst struct {
 }
 
 func (db *KeyValueDB) initializeCheckPoint(config *DBConfig) error {
-	db.checkpoint.config = config.Checkpoint
+
 	db.checkpoint = &checkpointInst{}
+
+	db.checkpoint.config = config.Checkpoint
 	db.checkpoint.lastFullCheckpointProposalId = -1
 	db.checkpoint.eventChannel = make(chan paxos.DecideEvent, 100)
+
+	db.checkpoint.dbState = NewDBState()
 
 	folder := config.StorageFolder + "/checkpoint"
 	var err error
@@ -46,7 +50,7 @@ func (db *KeyValueDB) initializeCheckPoint(config *DBConfig) error {
 // cp id = paxos id
 // each table has a corresponding cp id indicating the increm or full?
 func (cp *checkpointInst) incrementalCheckpoint() error {
-	for name, table := range cp.dbState.Tables {
+	for name, table := range cp.dbState.Collections {
 		if !table.dirty {
 			continue
 		}
@@ -96,7 +100,10 @@ func (db *KeyValueDB) startCheckpointRoutine() {
 			if !ok {
 				break
 			}
-			_ = db.applyOpWrapper(checkpoint.dbState, event.DecidedValue.(*OpWrapper), event.InstanceId)
+			if event.DecidedValue == nil {
+				continue
+			}
+			_ = db.applyTransactions(checkpoint.dbState, event.DecidedValue.(*BatchSubmitArgs), event.InstanceId)
 			if checkpoint.dbState.LastAppliedProposalId != event.InstanceId {
 				log.Fatalf("??? checkpoint.go startCheckpointRoutine")
 			}

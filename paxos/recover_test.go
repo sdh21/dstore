@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/sdh21/dstore/cert"
 	"github.com/sdh21/dstore/storage"
-	"github.com/sdh21/dstore/utils"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -52,8 +52,8 @@ func (dsk *DiskStorage) Delete(key string) error {
 	return err
 }
 
-func getTestStorageConfig() *ServerConfig {
-	return &ServerConfig{
+func getTestStorageConfig() *Config {
+	return &Config{
 		Peers:             nil,
 		Me:                -1,
 		Storage:           nil,
@@ -290,7 +290,7 @@ func pxRecover(pxa []*Paxos, t *testing.T) []*Paxos {
 		cfg.Peers = pxa[i].peers
 		cfg.Me = i
 		cfg.Storage = dsg
-		tlscfg := &utils.MutualTLSConfig{
+		tlscfg := &cert.MutualTLSConfig{
 			ServerCertFile: "../cert/test_cert/server.crt",
 			ServerPKFile:   "../cert/test_cert/server.key",
 			ClientCertFile: "../cert/test_cert/client.crt",
@@ -342,7 +342,7 @@ func createPaxosWithStorage(count int, tag string, t *testing.T) ([]*Peer, []*Pa
 			entries:      map[string][]byte{},
 			folder:       folder,
 		}
-		tlscfg := &utils.MutualTLSConfig{
+		tlscfg := &cert.MutualTLSConfig{
 			ServerCertFile: "../cert/test_cert/server.crt",
 			ServerPKFile:   "../cert/test_cert/server.key",
 			ClientCertFile: "../cert/test_cert/client.crt",
